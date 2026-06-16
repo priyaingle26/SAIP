@@ -1,0 +1,32 @@
+# Environment files (safety net)
+.env
+.env.*
+!.env.example
+!.env.local.example
+
+# Virtual environments
+.venv/
+
+# Dependencies
+node_modules/
+
+# Build outputs
+.next/
+.output/
+.wxt/
+dist/
+build/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+*.swp
+*.swo
+
+# Keys
+*.p8
+*.pub
+*.pem
