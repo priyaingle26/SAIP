@@ -1,6 +1,6 @@
-# SAIP AI Scribe — Chrome Extension
+# SAIP AI Scribe — Extension
 
-An enterprise-grade, high-performance Chrome Extension that acts as an EHR overlay, providing clinicians with real-time ambient clinical scribing, automated clinical note generation, and smart autofilling into Electronic Health Record (EHR) forms.
+An enterprise-grade, high-performance Extension that acts as an EHR overlay, providing clinicians with real-time ambient clinical scribing, automated clinical note generation, and smart autofilling into Electronic Health Record (EHR) forms.
 
 Built with **WXT**, **React**, and **TypeScript**.
 
