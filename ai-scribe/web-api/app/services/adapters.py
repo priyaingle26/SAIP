@@ -99,3 +99,18 @@ class GenerativeAIService(ABC):
         temperature: int = 0,
     ) -> GenerationOutput:
         pass
+
+    def complete_structured(
+        self,
+        model: str,
+        messages: str | list[dict[str, str]],
+        response_schema: dict,
+        temperature: int = 0,
+    ) -> GenerationOutput:
+        """Structured (schema-constrained JSON) completion.
+
+        Providers without native structured-output support fall back to a
+        plain completion; the caller is responsible for instructing the model
+        to return JSON via the prompt and for parsing/validating the result.
+        """
+        return self.complete(model, messages, temperature)
