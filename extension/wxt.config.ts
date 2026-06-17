@@ -12,6 +12,7 @@ export default defineConfig({
       'offscreen',
       'sidePanel',
       'tabs',
+      'webNavigation',
     ],
     host_permissions: [
       'https://*.crediblebh.com/*',

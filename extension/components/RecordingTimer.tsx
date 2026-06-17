@@ -12,23 +12,34 @@ export default function RecordingTimer() {
   const ss = String(seconds % 60).padStart(2, '0');
 
   return (
-    <div style={styles.wrap}>
-      <div style={styles.dot} />
-      <span style={styles.time}>{mm}:{ss}</span>
+    <div
+      role="timer"
+      aria-live="off"
+      aria-label={`Recording duration: ${mm} minutes ${ss} seconds`}
+      style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 'var(--space-1)' }}
+    >
+      <div
+        aria-hidden="true"
+        style={{
+          width: 8,
+          height: 8,
+          borderRadius: '50%',
+          background: 'var(--color-destructive)',
+          animation: 'saip-blink 1s step-start infinite',
+        }}
+      />
+      <span
+        style={{
+          fontSize: 18,
+          fontWeight: 700,
+          color: 'var(--color-destructive)',
+          fontVariantNumeric: 'tabular-nums',
+          letterSpacing: 2,
+          fontFamily: 'var(--font-mono)',
+        }}
+      >
+        {mm}:{ss}
+      </span>
     </div>
   );
 }
-
-const styles: Record<string, React.CSSProperties> = {
-  wrap: {
-    display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6,
-  },
-  dot: {
-    width: 10, height: 10, borderRadius: '50%', background: '#f56565',
-    animation: 'blink 1s step-start infinite',
-  },
-  time: {
-    fontSize: 22, fontWeight: 700, color: '#fc8181',
-    fontVariantNumeric: 'tabular-nums', letterSpacing: 2,
-  },
-};

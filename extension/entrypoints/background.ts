@@ -46,7 +46,7 @@ async function processAudio(audioBase64: string, mimeType: string, encounterId?:
     }
     const blob = new Blob([bytes], { type: mimeType });
 
-    // Step 1: Transcribe
+    // Step 1: Transcribe (backend now persists Encounter + Recording, returns a stable sqid)
     const transcribeResult = await transcribeAudio(blob, encounterId);
     if (!transcribeResult.success || !transcribeResult.data) {
       chrome.runtime.sendMessage({ type: 'ERROR', error: transcribeResult.error });
@@ -66,6 +66,7 @@ async function processAudio(audioBase64: string, mimeType: string, encounterId?:
       return;
     }
 
+    // Persist locally so the side panel can show it immediately
     await saveEncounterLocally({
       id: eid,
       clientName: 'Current Session',
@@ -126,16 +127,30 @@ async function handleMessage(
 async function saveEncounterLocally(encounter: Encounter) {
   const result = await chrome.storage.local.get(STORAGE_KEYS.encounters);
   const existing = (result[STORAGE_KEYS.encounters] ?? []) as Encounter[];
+  // Prepend new and remove any prior entry with the same id
   const updated = [encounter, ...existing.filter((e) => e.id !== encounter.id)];
   await chrome.storage.local.set({ [STORAGE_KEYS.encounters]: updated });
 }
 
+// Merge backend encounters with local cache — never delete unsynced local entries.
 async function syncEncounters() {
   const user = await verifyToken();
   if (!user) return;
-  const result = await fetchEncounters();
-  if (result.success && result.data) {
-    await chrome.storage.local.set({ [STORAGE_KEYS.encounters]: result.data });
-  }
-}
 
+  const result = await fetchEncounters();
+  if (!result.success || !result.data) return;
+
+  const backendList = result.data as Encounter[];
+  const local = await chrome.storage.local.get(STORAGE_KEYS.encounters);
+  const localList = (local[STORAGE_KEYS.encounters] ?? []) as Encounter[];
+
+  // Build a map of backend encounters by id for O(1) lookup
+  const backendById = new Map(backendList.map((e) => [e.id, e]));
+
+  // Keep local-only entries (not yet synced to backend) and merge them at the end
+  const localOnly = localList.filter((e) => !backendById.has(e.id));
+
+  // Merge: backend list (authoritative) + unsynced local entries
+  const merged = [...backendList, ...localOnly];
+  await chrome.storage.local.set({ [STORAGE_KEYS.encounters]: merged });
+}

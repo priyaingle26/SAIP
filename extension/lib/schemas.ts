@@ -99,6 +99,10 @@ export interface GenerateResponse {
 export interface DetectedForm {
   formType: string;
   confidence: number; // 0–1
+  /** Present when the current page is inside a multi-page evaluation bundle. */
+  fvid?: string;
+  /** Bundle id (e.g. 'psych-eval' | 'em-ept') derived from fvid, if recognized. */
+  bundle?: string;
 }
 
 export interface FormAnswersRequest {
@@ -106,10 +110,48 @@ export interface FormAnswersRequest {
   formContext: string;   // document.body.innerText captured by content script
   transcript: string;
   clinicalNote: string;
+  encounterId?: string;
 }
 
 export interface FormAnswersResponse {
   formType: string;
   confidence: number;
   fields: Record<string, string>;
+}
+
+// ─── Evaluation bundle types (Psych Eval, E&M EPT — design.md D7) ────────────
+
+export interface EvaluationAnswersRequest {
+  bundleId: string;
+  formContext: string;
+  transcript: string;
+  clinicalNote: string;
+  encounterId?: string;
+  visitId?: string;
+}
+
+export interface EvaluationAnswersResponse {
+  bundleId: string;
+  fields: Record<string, string>;
+}
+
+/** Cached bundle generation result, keyed by fvid in chrome.storage.local. */
+export interface EvaluationCacheEntry {
+  bundleId: string;
+  fields: Record<string, string>;
+  generatedAt: number;
+}
+
+// ─── Observability (design.md D8) ────────────────────────────────────────────
+
+/** Runtime record of one autofill run, persisted for live debugging. */
+export interface FillLogEntry {
+  formType: string;
+  filled: number;
+  missed: string[];
+  manualRequired: string[];
+  labelsSeen: string[];
+  frameUrl: string;
+  ts: number;
+  confidence?: number;
 }

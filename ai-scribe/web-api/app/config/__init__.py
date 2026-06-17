@@ -56,7 +56,7 @@ class Settings(BaseSettings):
     TRANSCRIPTION_SERVICE: Literal["OpenAI Whisper", "WhisperX", "AWS Transcribe", "Parakeet MLX"] = (
         "Parakeet MLX"
     )
-    GENERATIVE_AI_SERVICE: Literal["Ollama", "OpenAI", "AWS Bedrock", "VLLM", "LM Studio", "LlamaCpp"] = "Ollama"
+    GENERATIVE_AI_SERVICE: Literal["Ollama", "OpenAI", "AWS Bedrock", "VLLM", "LM Studio", "LlamaCpp", "Gemini"] = "Ollama"
     LOCAL_WHISPER_SERVICE_URL: str | None = None
 
     # WhisperX Configuration
@@ -83,6 +83,7 @@ class Settings(BaseSettings):
     ENCOUNTERS_PAGE_SIZE: int = 15
 
     OPENAI_API_KEY: str | None = None
+    GEMINI_API_KEY: str | None = None
 
     USE_AURORA: bool = True
     AURORA_WRITER_ENDPOINT: str | None = None
@@ -108,6 +109,7 @@ class Settings(BaseSettings):
 settings = Settings()  
 
 is_openai_supported: bool = settings.OPENAI_API_KEY is not None
+is_gemini_supported: bool = settings.GEMINI_API_KEY is not None
 is_aws_bedrock_supported = (
     (bool(settings.AWS_ACCESS_KEY_ID) and bool(settings.AWS_SECRET_ACCESS_KEY) and bool(settings.AWS_REGION))
     or (settings.ENVIRONMENT == "production" and bool(settings.AWS_REGION))
@@ -149,11 +151,12 @@ def get_available_services() -> dict:
         },
         "GENERATIVE_AI_SERVICE": {
             "description": "Service for generating text completions",
-            "options": ["Ollama", "OpenAI", "AWS Bedrock", "VLLM", "LM Studio", "LlamaCpp"],
+            "options": ["Ollama", "OpenAI", "AWS Bedrock", "VLLM", "LM Studio", "LlamaCpp", "Gemini"],
             "default": "Ollama",
             "models": {
                 "Ollama": ["llama3.1:8b", "llama3.1:70b", "llama3.2:8b", "llama3.2:70b"],
                 "OpenAI": ["gpt-4", "gpt-3.5-turbo"],
+                "Gemini": ["gemini-flash-latest", "gemini-pro-latest"],
                 "AWS Bedrock": [
                     "us.meta.llama3-3-70b-instruct-v1:0",
                     "meta.llama3-1-405b-instruct-v1:0",

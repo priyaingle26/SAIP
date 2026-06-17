@@ -273,6 +273,56 @@ class DraftNote(Base):
 
 
 # ----------------------------------
+# EXTENSION PERSISTENCE TABLES
+
+
+class FormAnswerSet(Base):
+    """Generated form-assistant answers, keyed by encounter + form type."""
+    __tablename__ = "form_answer_sets"
+
+    id: Mapped[str] = sqid_column(primary_key=True)
+    encounter_id: Mapped[str] = mapped_column(ForeignKey("encounters.id"))
+    form_type: Mapped[str] = mapped_column(VARCHAR(100))
+    fields: Mapped[str]          # JSON-as-Text (portable: SQLite + Postgres)
+    model: Mapped[str] = mapped_column(VARCHAR(50))
+    created: Mapped[datetime] = mapped_column(DATETIME_TYPE)
+
+    encounter: Mapped["Encounter"] = relationship()
+
+
+class EvaluationBundleCache(Base):
+    """Cached multi-page evaluation bundle generation, keyed by encounter + bundle."""
+    __tablename__ = "evaluation_bundle_cache"
+
+    id: Mapped[str] = sqid_column(primary_key=True)
+    encounter_id: Mapped[str] = mapped_column(ForeignKey("encounters.id"))
+    bundle_id: Mapped[str] = mapped_column(VARCHAR(50))
+    visit_id: Mapped[str | None] = mapped_column(VARCHAR(100))   # fvid/visittemp_id
+    fields: Mapped[str]          # JSON-as-Text
+    model: Mapped[str] = mapped_column(VARCHAR(50))
+    created: Mapped[datetime] = mapped_column(DATETIME_TYPE)
+
+    encounter: Mapped["Encounter"] = relationship()
+
+
+class AutofillAuditEntry(Base):
+    """Immutable audit record of one autofill run."""
+    __tablename__ = "autofill_audit"
+
+    id: Mapped[str] = sqid_column(primary_key=True)
+    encounter_id: Mapped[str | None] = mapped_column(ForeignKey("encounters.id"), nullable=True)
+    form_type: Mapped[str] = mapped_column(VARCHAR(100))
+    frame_url: Mapped[str] = mapped_column(VARCHAR(500))
+    confidence: Mapped[float]
+    filled: Mapped[int]
+    missed: Mapped[int]
+    manual_required: Mapped[int]
+    detail: Mapped[str]          # JSON-as-Text: {filled: str[], missed: str[], manual: str[]}
+    username: Mapped[str] = mapped_column(VARCHAR(255))
+    occurred: Mapped[datetime] = mapped_column(DATETIME_TYPE)
+
+
+# ----------------------------------
 # CHANGE TRACKING
 
 DataEntityType = Literal["USER", "NOTE DEFINITION", "ENCOUNTER"]

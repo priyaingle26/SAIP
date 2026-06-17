@@ -6,51 +6,44 @@ import TranscriptView from '../../components/TranscriptView';
 import GeneratedNoteView from '../../components/GeneratedNoteView';
 import EncounterHistory from '../../components/EncounterHistory';
 import FormAssistant from '../../components/FormAssistant';
+import {
+  TabBar, Button, Banner, Spinner, Divider,
+  LogOutIcon, FileTextIcon, HistoryIcon, MicIcon, AlertIcon,
+  INPUT_STYLE,
+} from '../../components/ui';
 
 type Tab = 'record' | 'note' | 'history';
 
-// ─── Sleek SVG Icons for a Professional, High-End UI ─────────────────────────
-const MicIcon = ({ size = 20, color = 'currentColor' }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
-    <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
-    <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-    <line x1="12" x2="12" y1="19" y2="22" />
-  </svg>
-);
+const TABS = [
+  { id: 'record',  label: 'Record',  icon: <MicIcon size={14} /> },
+  { id: 'note',    label: 'Note',    icon: <FileTextIcon size={14} /> },
+  { id: 'history', label: 'History', icon: <HistoryIcon size={14} /> },
+] as const;
 
-const FileTextIcon = ({ size = 20, color = 'currentColor' }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
-    <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" />
-    <path d="M14 2v4a2 2 0 0 0 2 2h4" />
-    <path d="M10 9H8" />
-    <path d="M16 13H8" />
-    <path d="M16 17H8" />
-  </svg>
-);
-
-const HistoryIcon = ({ size = 20, color = 'currentColor' }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
-    <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
-    <path d="M3 3v5h5" />
-    <path d="M12 7v5l4 2" />
-  </svg>
-);
-
-const LogOutIcon = ({ size = 18, color = 'currentColor' }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
-    <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
-    <polyline points="16 17 21 12 16 7" />
-    <line x1="21" x2="9" y1="12" y2="12" />
-  </svg>
-);
-
-const AlertTriangleIcon = ({ size = 16, color = 'currentColor' }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
-    <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" />
-    <line x1="12" x2="12" y1="9" y2="13" />
-    <line x1="12" x2="12.01" y1="17" y2="17" />
-  </svg>
-);
+// ─── Logo mark ────────────────────────────────────────────────────────────────
+function LogoMark({ size = 26 }: { size?: number }) {
+  return (
+    <div
+      aria-hidden="true"
+      style={{
+        width: size,
+        height: size,
+        borderRadius: 'var(--radius-sm)',
+        background: 'var(--color-primary)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        fontSize: size * 0.5,
+        fontWeight: 700,
+        color: 'var(--color-primary-fg)',
+        fontFamily: 'var(--font-heading)',
+        flexShrink: 0,
+      }}
+    >
+      S
+    </div>
+  );
+}
 
 export default function App() {
   const [user, setUser] = useState<SaipUser | null>(null);
@@ -117,7 +110,7 @@ export default function App() {
     try {
       const u = await login(email, password);
       setUser(u);
-    } catch (err) {
+    } catch {
       setLoginError('Invalid credentials. Please try again.');
     } finally {
       setLoggingIn(false);
@@ -134,17 +127,16 @@ export default function App() {
   // ─── Recording ───────────────────────────────────────────────────────────
   const handleStartRecording = useCallback(async () => {
     try {
-      // 1. Request mic permission in the visible UI (Side Panel) first
+      // Request mic permission in the visible UI (Side Panel) first —
       // Chrome blocks offscreen documents from showing permission prompts
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      stream.getTracks().forEach(t => t.stop()); // Immediately stop, we just needed the permission granted
+      stream.getTracks().forEach(t => t.stop());
 
       setIsRecording(true);
       setTranscript('');
       setGeneratedNote(null);
       setProcessingError('');
 
-      // Ensure offscreen document exists
       const existing = await chrome.offscreen.hasDocument();
       if (!existing) {
         await chrome.offscreen.createDocument({
@@ -153,10 +145,9 @@ export default function App() {
           justification: 'Recording clinical audio for SAIP transcription',
         });
       }
-
       chrome.runtime.sendMessage({ target: 'offscreen', type: 'START_RECORDING' });
-    } catch (err) {
-      alert('Microphone permission is required to use the AI Scribe. Please allow microphone access in Chrome settings.');
+    } catch {
+      alert('Microphone permission is required. Please allow microphone access in Chrome settings.');
     }
   }, []);
 
@@ -174,39 +165,65 @@ export default function App() {
     setActiveTab('note');
   }
 
-  // ─── Render: Login Screen ─────────────────────────────────────────────────
+  // ─── Render: Login ────────────────────────────────────────────────────────
   if (!user) {
     return (
-      <div style={styles.loginWrap}>
-        <div style={styles.loginCard}>
-          <div style={styles.logo}>
-            <div style={styles.logoIcon}>S</div>
-            <span style={styles.logoText}>SAIP AI Scribe</span>
+      <div style={loginWrap}>
+        <div style={loginCard}>
+          {/* Brand */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', marginBottom: 'var(--space-1)' }}>
+            <LogoMark size={32} />
+            <span style={{ fontFamily: 'var(--font-heading)', fontSize: 'var(--text-lg)', fontWeight: 700, color: 'var(--color-primary)' }}>
+              SAIP AI Scribe
+            </span>
           </div>
-          <p style={styles.loginSubtitle}>EHR Overlay — Sign in to continue</p>
-          <form onSubmit={handleLogin} style={styles.form}>
-            <input
-              id="saip-email"
-              style={styles.input}
-              type="email"
-              placeholder="Email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              required
-            />
-            <input
-              id="saip-password"
-              style={styles.input}
-              type="password"
-              placeholder="Password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-            />
-            {loginError && <p style={styles.error}>{loginError}</p>}
-            <button id="saip-login-btn" style={styles.primaryBtn} type="submit" disabled={loggingIn}>
+          <p style={{ fontSize: 'var(--text-sm)', color: 'var(--color-muted)', marginBottom: 'var(--space-6)' }}>
+            Clinical AI Companion — Sign in to continue
+          </p>
+
+          <form onSubmit={handleLogin} style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-1)' }}>
+              <label htmlFor="saip-email" style={fieldLabel}>Email</label>
+              <input
+                id="saip-email"
+                type="email"
+                placeholder="clinician@example.com"
+                autoComplete="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+                style={{ ...INPUT_STYLE, fontSize: 'var(--text-md)' }}
+                onFocus={(e) => { e.target.style.borderColor = 'var(--color-primary)'; e.target.style.boxShadow = '0 0 0 3px var(--color-ring)'; }}
+                onBlur={(e) => { e.target.style.borderColor = 'var(--color-border)'; e.target.style.boxShadow = 'none'; }}
+              />
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-1)' }}>
+              <label htmlFor="saip-password" style={fieldLabel}>Password</label>
+              <input
+                id="saip-password"
+                type="password"
+                placeholder="••••••••"
+                autoComplete="current-password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+                style={{ ...INPUT_STYLE, fontSize: 'var(--text-md)' }}
+                onFocus={(e) => { e.target.style.borderColor = 'var(--color-primary)'; e.target.style.boxShadow = '0 0 0 3px var(--color-ring)'; }}
+                onBlur={(e) => { e.target.style.borderColor = 'var(--color-border)'; e.target.style.boxShadow = 'none'; }}
+              />
+            </div>
+            {loginError && <Banner variant="error">{loginError}</Banner>}
+            <Button
+              id="saip-login-btn"
+              type="submit"
+              variant="primary"
+              size="lg"
+              loading={loggingIn}
+              fullWidth
+              style={{ marginTop: 'var(--space-1)' }}
+            >
               {loggingIn ? 'Signing in…' : 'Sign In'}
-            </button>
+            </Button>
           </form>
         </div>
       </div>
@@ -215,91 +232,120 @@ export default function App() {
 
   // ─── Render: Main Panel ───────────────────────────────────────────────────
   return (
-    <div style={styles.panel}>
-      {/* Header */}
-      <header style={styles.header}>
-        <div style={styles.headerLeft}>
-          <div style={styles.logoIcon}>S</div>
-          <span style={styles.headerTitle}>SAIP AI Scribe</span>
+    <div style={panelStyle}>
+      {/* ── Header ── */}
+      <header style={headerStyle}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+          <LogoMark size={24} />
+          <span style={{ fontFamily: 'var(--font-heading)', fontSize: 'var(--text-base)', fontWeight: 700, color: 'var(--color-primary)' }}>
+            SAIP AI Scribe
+          </span>
         </div>
-        <button id="saip-logout-btn" style={styles.ghostBtn} onClick={handleLogout} title="Logout">
-          <LogOutIcon size={16} color="#718096" />
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+          <span style={{ fontSize: 'var(--text-xs)', color: 'var(--color-muted)' }}>
+            {user.name || user.email}
+          </span>
+          <button
+            id="saip-logout-btn"
+            onClick={handleLogout}
+            title="Sign out"
+            aria-label="Sign out"
+            style={ghostIconBtn}
+            onFocus={(e) => { (e.target as HTMLElement).style.outline = '2px solid var(--color-ring)'; (e.target as HTMLElement).style.outlineOffset = '2px'; }}
+            onBlur={(e) => { (e.target as HTMLElement).style.outline = 'none'; }}
+          >
+            <LogOutIcon size={15} />
+          </button>
+        </div>
       </header>
 
-      {/* User badge */}
-      <div style={styles.userBadge}>
-        <span style={styles.userDot} />
-        <span>{user.name || user.email}</span>
-      </div>
+      {/* ── Tab bar ── */}
+      <TabBar
+        tabs={TABS as unknown as Array<{ id: string; label: string; icon: React.ReactNode }>}
+        active={activeTab}
+        onChange={(id) => setActiveTab(id as Tab)}
+      />
 
-      {/* Tab Bar */}
-      <div style={styles.tabBar}>
-        <button
-          id="saip-tab-record"
-          style={{ ...styles.tabBtn, ...(activeTab === 'record' ? styles.tabActive : {}) }}
-          onClick={() => setActiveTab('record')}
-        >
-          <MicIcon size={14} color={activeTab === 'record' ? '#63b3ed' : '#718096'} />
-          <span>Record</span>
-        </button>
-        <button
-          id="saip-tab-note"
-          style={{ ...styles.tabBtn, ...(activeTab === 'note' ? styles.tabActive : {}) }}
-          onClick={() => setActiveTab('note')}
-        >
-          <FileTextIcon size={14} color={activeTab === 'note' ? '#63b3ed' : '#718096'} />
-          <span>Note</span>
-        </button>
-        <button
-          id="saip-tab-history"
-          style={{ ...styles.tabBtn, ...(activeTab === 'history' ? styles.tabActive : {}) }}
-          onClick={() => setActiveTab('history')}
-        >
-          <HistoryIcon size={14} color={activeTab === 'history' ? '#63b3ed' : '#718096'} />
-          <span>History</span>
-        </button>
-      </div>
-
-      {/* Content */}
-      <div style={styles.content}>
+      {/* ── Content ── */}
+      <main
+        id={`saip-panel-${activeTab}`}
+        role="tabpanel"
+        aria-labelledby={`saip-tab-${activeTab}`}
+        style={contentStyle}
+      >
         {/* ── Record Tab ── */}
         {activeTab === 'record' && (
-          <div style={styles.recordTab}>
-            <div style={styles.recordRing(isRecording)}>
-              <div style={styles.recordCore}>
-                {isRecording ? <RecordingTimer /> : <MicIcon size={34} color="#63b3ed" />}
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 'var(--space-2)' }}>
+            {/* Record ring + button */}
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 'var(--space-5)', paddingTop: 'var(--space-4)' }}>
+              {/* Animated ring */}
+              <div
+                style={{
+                  width: 120,
+                  height: 120,
+                  borderRadius: '50%',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  background: isRecording ? 'var(--color-destructive-bg)' : 'var(--color-primary-subtle)',
+                  border: `2px solid ${isRecording ? 'var(--color-destructive-border)' : 'var(--color-primary-subtle-border)'}`,
+                  animation: isRecording ? 'saip-pulse-ring-rec 1.6s ease-in-out infinite' : 'none',
+                  transition: 'background var(--motion-slow), border-color var(--motion-slow)',
+                }}
+              >
+                <div style={{
+                  width: 80, height: 80, borderRadius: '50%',
+                  background: 'var(--color-surface)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  boxShadow: 'var(--shadow-md)',
+                  color: isRecording ? 'var(--color-destructive)' : 'var(--color-primary)',
+                }}>
+                  {isRecording ? <RecordingTimer /> : <MicIcon size={32} />}
+                </div>
               </div>
-            </div>
 
-            <div style={styles.recordActions}>
               {!isRecording && !isProcessing && (
-                <button id="saip-start-btn" style={styles.recordBtn} onClick={handleStartRecording}>
+                <Button
+                  id="saip-start-btn"
+                  variant="primary"
+                  size="lg"
+                  onClick={handleStartRecording}
+                  iconLeft={<MicIcon size={16} />}
+                  style={{ minWidth: 180 }}
+                >
                   Start Recording
-                </button>
+                </Button>
               )}
               {isRecording && (
-                <button id="saip-stop-btn" style={styles.stopBtn} onClick={handleStopRecording}>
-                  Stop & Process
-                </button>
+                <Button
+                  id="saip-stop-btn"
+                  variant="destructive"
+                  size="lg"
+                  onClick={handleStopRecording}
+                  style={{ minWidth: 180 }}
+                >
+                  Stop &amp; Process
+                </Button>
               )}
               {isProcessing && (
-                <div style={styles.processingBox}>
-                  <div style={styles.spinner} />
+                <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', color: 'var(--color-muted)', fontSize: 'var(--text-sm)' }}>
+                  <Spinner size={15} />
                   <span>{processingStep}</span>
                 </div>
               )}
-              {processingError && (
-                <div style={{...styles.processingBox, color: '#fc8181'}}>
-                  <AlertTriangleIcon size={16} color="#fc8181" />
-                  <span>{processingError}</span>
-                </div>
-              )}
             </div>
 
+            {processingError && (
+              <Banner variant="error" style={{ width: '100%' }}>
+                {processingError}
+              </Banner>
+            )}
+
             {transcript && (
-              <div style={styles.section}>
-                <div style={styles.sectionLabel}>Live Transcript</div>
+              <div style={{ width: '100%' }}>
+                <p style={{ fontSize: 'var(--text-xs)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', color: 'var(--color-muted)', marginBottom: 'var(--space-2)' }}>
+                  Live Transcript
+                </p>
                 <TranscriptView transcript={transcript} />
               </div>
             )}
@@ -308,20 +354,21 @@ export default function App() {
 
         {/* ── Note Tab ── */}
         {activeTab === 'note' && (
-          <div style={styles.noteTab}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
             {generatedNote ? (
               <>
                 <GeneratedNoteView note={generatedNote} onNoteChange={setGeneratedNote} />
+                <Divider />
                 <FormAssistant
                   transcript={transcript}
                   clinicalNote={generatedNote.raw ?? ''}
                 />
               </>
             ) : (
-              <div style={styles.emptyState}>
-                <FileTextIcon size={32} color="#4a5568" />
-                <p>No note generated yet.</p>
-                <p style={styles.hint}>Record a session first.</p>
+              <div style={emptyState}>
+                <div style={{ color: 'var(--color-muted-2)' }}><FileTextIcon size={32} /></div>
+                <p style={{ fontSize: 'var(--text-base)', color: 'var(--color-muted)', fontWeight: 500 }}>No note generated yet</p>
+                <p style={{ fontSize: 'var(--text-sm)', color: 'var(--color-muted-2)' }}>Record a session first.</p>
               </div>
             )}
           </div>
@@ -329,150 +376,92 @@ export default function App() {
 
         {/* ── History Tab ── */}
         {activeTab === 'history' && (
-          <EncounterHistory
-            encounters={encounters}
-            onSelect={handleSelectEncounter}
-          />
+          <EncounterHistory encounters={encounters} onSelect={handleSelectEncounter} />
         )}
-      </div>
+      </main>
     </div>
   );
 }
 
-// ─── Styles ──────────────────────────────────────────────────────────────────
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const styles: Record<string, any> = {
-  panel: {
-    display: 'flex', flexDirection: 'column', height: '100vh',
-    background: 'linear-gradient(160deg, #0a0f1e 0%, #0f1a2e 100%)',
-    color: '#e2e8f0', overflow: 'hidden',
-  },
-  header: {
-    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-    padding: '12px 16px', borderBottom: '1px solid rgba(99,179,237,0.15)',
-    background: 'rgba(15,26,46,0.8)', backdropFilter: 'blur(8px)',
-  },
-  headerLeft: { display: 'flex', alignItems: 'center', gap: 10 },
-  headerTitle: { fontSize: 15, fontWeight: 600, color: '#63b3ed' },
-  logoIcon: {
-    width: 28, height: 28, borderRadius: 8, background: 'linear-gradient(135deg,#4299e1,#805ad5)',
-    display: 'flex', alignItems: 'center', justifyContent: 'center',
-    fontSize: 13, fontWeight: 700, color: '#fff',
-  },
-  ghostBtn: {
-    background: 'none', border: 'none', color: '#718096', cursor: 'pointer',
-    fontSize: 18, padding: 4, borderRadius: 6, transition: 'color 0.2s',
-  },
-  userBadge: {
-    display: 'flex', alignItems: 'center', gap: 6,
-    padding: '6px 16px', fontSize: 12, color: '#90cdf4',
-    borderBottom: '1px solid rgba(99,179,237,0.08)',
-  },
-  userDot: {
-    width: 7, height: 7, borderRadius: '50%', background: '#48bb78', flexShrink: 0,
-  },
-  tabBar: {
-    display: 'flex', padding: '8px 12px', gap: 6,
-    borderBottom: '1px solid rgba(99,179,237,0.1)',
-  },
-  tabBtn: {
-    flex: 1, padding: '7px 4px', border: 'none', borderRadius: 8,
-    background: 'rgba(255,255,255,0.04)', color: '#718096',
-    cursor: 'pointer', fontSize: 12, fontWeight: 500, transition: 'all 0.2s',
-    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-  },
-  tabActive: {
-    background: 'rgba(66,153,225,0.15)', color: '#63b3ed',
-    boxShadow: '0 0 0 1px rgba(99,179,237,0.3)',
-  },
-  content: { flex: 1, overflowY: 'auto', padding: 16 },
+// ─── Styles (token-referenced only, no hardcoded values) ─────────────────────
 
-  // Record tab
-  recordTab: { display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 24 },
-  recordRing: (active: boolean) => ({
-    width: 130, height: 130, borderRadius: '50%', marginTop: 16,
-    background: active
-      ? 'radial-gradient(circle, rgba(245,101,101,0.2) 0%, rgba(245,101,101,0.05) 70%)'
-      : 'radial-gradient(circle, rgba(66,153,225,0.15) 0%, rgba(66,153,225,0.03) 70%)',
-    border: active ? '2px solid rgba(245,101,101,0.5)' : '2px solid rgba(66,153,225,0.3)',
-    display: 'flex', alignItems: 'center', justifyContent: 'center',
-    animation: active ? 'pulse 1.5s ease-in-out infinite' : 'none',
-    transition: 'all 0.4s ease',
-    boxShadow: active ? '0 0 30px rgba(245,101,101,0.2)' : '0 0 20px rgba(66,153,225,0.1)',
-  }),
-  recordCore: {
-    width: 90, height: 90, borderRadius: '50%',
-    background: 'rgba(15,26,46,0.9)',
-    display: 'flex', alignItems: 'center', justifyContent: 'center',
-  },
-  micIcon: { fontSize: 34 },
-  recordActions: { width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 },
-  recordBtn: {
-    width: '85%', padding: '14px', borderRadius: 12,
-    background: 'linear-gradient(135deg, #4299e1, #805ad5)',
-    color: '#fff', border: 'none', cursor: 'pointer',
-    fontSize: 15, fontWeight: 600, letterSpacing: 0.3,
-    boxShadow: '0 4px 20px rgba(66,153,225,0.35)', transition: 'transform 0.15s',
-  },
-  stopBtn: {
-    width: '85%', padding: '14px', borderRadius: 12,
-    background: 'linear-gradient(135deg, #f56565, #e53e3e)',
-    color: '#fff', border: 'none', cursor: 'pointer',
-    fontSize: 15, fontWeight: 600, letterSpacing: 0.3,
-    boxShadow: '0 4px 20px rgba(245,101,101,0.35)', transition: 'transform 0.15s',
-  },
-  processingBox: {
-    display: 'flex', alignItems: 'center', gap: 10,
-    color: '#90cdf4', fontSize: 13,
-  },
-  spinner: {
-    width: 16, height: 16, border: '2px solid rgba(99,179,237,0.3)',
-    borderTop: '2px solid #63b3ed', borderRadius: '50%',
-    animation: 'spin 0.8s linear infinite',
-  },
-  section: { width: '100%' },
-  sectionLabel: {
-    fontSize: 11, fontWeight: 600, textTransform: 'uppercase',
-    letterSpacing: 1, color: '#4a5568', marginBottom: 8,
-  },
+const panelStyle: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  height: '100vh',
+  background: 'var(--color-bg)',
+  color: 'var(--color-foreground)',
+  overflow: 'hidden',
+};
 
-  // Note tab
-  noteTab: { display: 'flex', flexDirection: 'column', gap: 16 },
+const headerStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  padding: '10px var(--space-4)',
+  background: 'var(--color-surface)',
+  borderBottom: '1px solid var(--color-border)',
+  boxShadow: 'var(--shadow-sm)',
+  flexShrink: 0,
+};
 
-  // Empty state
-  emptyState: {
-    display: 'flex', flexDirection: 'column', alignItems: 'center',
-    justifyContent: 'center', gap: 8, padding: '60px 20px',
-    color: '#4a5568', textAlign: 'center',
-  },
-  hint: { fontSize: 12, color: '#2d3748' },
+const contentStyle: React.CSSProperties = {
+  flex: 1,
+  overflowY: 'auto',
+  padding: 'var(--space-4)',
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 'var(--space-4)',
+};
 
-  // Login
-  loginWrap: {
-    height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center',
-    background: 'linear-gradient(160deg, #0a0f1e 0%, #0f1a2e 100%)', padding: 20,
-  },
-  loginCard: {
-    width: '100%', maxWidth: 320, padding: 28, borderRadius: 16,
-    background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(99,179,237,0.15)',
-    backdropFilter: 'blur(12px)',
-    boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
-  },
-  logo: { display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 },
-  logoText: { fontSize: 17, fontWeight: 700, color: '#63b3ed' },
-  loginSubtitle: { fontSize: 12, color: '#4a5568', marginBottom: 24 },
-  form: { display: 'flex', flexDirection: 'column', gap: 12 },
-  input: {
-    padding: '11px 14px', borderRadius: 10,
-    background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(99,179,237,0.2)',
-    color: '#e2e8f0', fontSize: 14, outline: 'none',
-  },
-  primaryBtn: {
-    padding: '12px', borderRadius: 10, marginTop: 4,
-    background: 'linear-gradient(135deg, #4299e1, #805ad5)',
-    color: '#fff', border: 'none', cursor: 'pointer',
-    fontSize: 14, fontWeight: 600,
-    boxShadow: '0 4px 20px rgba(66,153,225,0.3)',
-  },
-  error: { fontSize: 12, color: '#fc8181' },
+const loginWrap: React.CSSProperties = {
+  height: '100vh',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  background: 'var(--color-bg)',
+  padding: 'var(--space-5)',
+};
+
+const loginCard: React.CSSProperties = {
+  width: '100%',
+  maxWidth: 320,
+  padding: 'var(--space-6)',
+  borderRadius: 'var(--radius-lg)',
+  background: 'var(--color-surface)',
+  border: '1px solid var(--color-border)',
+  boxShadow: 'var(--shadow-lg)',
+};
+
+const fieldLabel: React.CSSProperties = {
+  fontSize: 'var(--text-xs)',
+  fontWeight: 700,
+  textTransform: 'uppercase',
+  letterSpacing: '0.06em',
+  color: 'var(--color-muted)',
+};
+
+const ghostIconBtn: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  width: 32,
+  height: 32,
+  borderRadius: 'var(--radius-sm)',
+  border: 'none',
+  background: 'transparent',
+  color: 'var(--color-muted)',
+  cursor: 'pointer',
+  transition: 'background var(--motion-fast), color var(--motion-fast)',
+  outline: 'none',
+};
+
+const emptyState: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  alignItems: 'center',
+  justifyContent: 'center',
+  gap: 'var(--space-2)',
+  padding: 'var(--space-8) var(--space-5)',
+  textAlign: 'center',
 };
