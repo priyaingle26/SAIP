@@ -8,7 +8,7 @@ import EncounterHistory from '../../components/EncounterHistory';
 import FormAssistant from '../../components/FormAssistant';
 import {
   TabBar, Button, Banner, Spinner, Divider,
-  LogOutIcon, FileTextIcon, HistoryIcon, MicIcon, AlertIcon,
+  LogOutIcon, FileTextIcon, HistoryIcon, MicIcon, AlertIcon, UploadIcon,
   INPUT_STYLE,
 } from '../../components/ui';
 
@@ -62,6 +62,8 @@ export default function App() {
   const [currentEncounterId, setCurrentEncounterId] = useState<string | null>(null);
   const [encounters, setEncounters] = useState<Encounter[]>([]);
   const [activeTab, setActiveTab] = useState<Tab>('record');
+  
+  const fileInputRef = React.useRef<HTMLInputElement>(null);
 
   // ─── Bootstrap: check auth & load encounters ─────────────────────────────
   useEffect(() => {
@@ -156,6 +158,36 @@ export default function App() {
     setIsProcessing(true);
     setProcessingStep('Uploading & transcribing audio…');
     chrome.runtime.sendMessage({ target: 'offscreen', type: 'STOP_RECORDING' });
+  }, []);
+
+  const handleFileUpload = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    setIsRecording(false);
+    setIsProcessing(true);
+    setProcessingStep('Uploading & transcribing audio…');
+    setTranscript('');
+    setGeneratedNote(null);
+    setProcessingError('');
+
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const result = reader.result as string;
+      const base64 = result.split(',')[1];
+      const mimeType = file.type || 'audio/webm';
+      
+      const port = chrome.runtime.connect({ name: 'saip-audio' });
+      port.postMessage({ audioBase64: base64, mimeType });
+    };
+    reader.onerror = () => {
+      setIsProcessing(false);
+      setProcessingError('Failed to read file');
+    };
+    reader.readAsDataURL(file);
+    
+    // Reset input
+    event.target.value = '';
   }, []);
 
   function handleSelectEncounter(encounter: Encounter) {
@@ -304,17 +336,36 @@ export default function App() {
                 </div>
               </div>
 
+              <input
+                type="file"
+                accept="audio/*"
+                style={{ display: 'none' }}
+                ref={fileInputRef}
+                onChange={handleFileUpload}
+              />
               {!isRecording && !isProcessing && (
-                <Button
-                  id="saip-start-btn"
-                  variant="primary"
-                  size="lg"
-                  onClick={handleStartRecording}
-                  iconLeft={<MicIcon size={16} />}
-                  style={{ minWidth: 180 }}
-                >
-                  Start Recording
-                </Button>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
+                  <Button
+                    id="saip-start-btn"
+                    variant="primary"
+                    size="lg"
+                    onClick={handleStartRecording}
+                    iconLeft={<MicIcon size={16} />}
+                    style={{ minWidth: 180 }}
+                  >
+                    Start Recording
+                  </Button>
+                  <Button
+                    id="saip-upload-btn"
+                    variant="secondary"
+                    size="md"
+                    onClick={() => fileInputRef.current?.click()}
+                    iconLeft={<UploadIcon size={14} />}
+                    style={{ minWidth: 180 }}
+                  >
+                    Upload Audio
+                  </Button>
+                </div>
               )}
               {isRecording && (
                 <Button
