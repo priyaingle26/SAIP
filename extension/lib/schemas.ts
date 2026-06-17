@@ -63,7 +63,13 @@ export type MessageType =
   | 'AUTH_REQUEST'
   | 'AUTH_SUCCESS'
   | 'AUTH_FAILURE'
-  | 'ERROR';
+  | 'ERROR'
+  // Live streaming
+  | 'STREAM_START'
+  | 'STREAM_DELTA'
+  | 'STREAM_COMPLETED'
+  | 'STREAM_FINALIZED'
+  | 'STREAM_ERROR';
 
 export interface ExtensionMessage {
   type: MessageType;
@@ -154,4 +160,43 @@ export interface FillLogEntry {
   frameUrl: string;
   ts: number;
   confidence?: number;
+}
+
+// ─── Live Streaming Transcription ────────────────────────────────────────────
+
+/** One labeled speaker turn returned by the finalize endpoint. */
+export interface TranscriptTurn {
+  speaker: string;
+  text: string;
+}
+
+/** Messages sent from the backend WS to the extension during streaming. */
+export type StreamingEvent =
+  | { type: 'delta'; text: string }
+  | { type: 'completed'; text: string }
+  | { type: 'error'; message: string };
+
+/** Extension message types added for live streaming. */
+export type StreamingMessageType =
+  | 'STREAM_START'
+  | 'STREAM_STOP'
+  | 'STREAM_PCM_FRAME'
+  | 'STREAM_DELTA'
+  | 'STREAM_COMPLETED'
+  | 'STREAM_ERROR'
+  | 'STREAM_FINALIZED';
+
+/** Payload sent when streaming finishes and the encounter is persisted. */
+export interface StreamFinalizedPayload {
+  encounterId: string;
+  transcript: string;
+  turns: TranscriptTurn[];
+}
+
+/** Payload for live caption updates forwarded to the side panel. */
+export interface StreamCaptionPayload {
+  /** Incremental word(s) from a delta event. */
+  delta?: string;
+  /** Full committed text from a completed-utterance event. */
+  completed?: string;
 }

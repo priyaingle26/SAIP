@@ -4,8 +4,13 @@
 export const SAIP_BASE_URL =
   (import.meta.env?.VITE_SAIP_API_URL as string) || 'http://localhost:8000';
 
+// WebSocket base URL — swap http(s) scheme for ws(s)
+export const SAIP_WS_BASE_URL = SAIP_BASE_URL.replace(/^http/, 'ws');
+
 export const SAIP_ENDPOINTS = {
   transcribe: `${SAIP_BASE_URL}/transcribe`,
+  transcribeFinalize: `${SAIP_BASE_URL}/transcribe-finalize`,
+  streamingStatus: `${SAIP_BASE_URL}/streaming-status`,
   generate: `${SAIP_BASE_URL}/generate`,
   generateFormAnswers: `${SAIP_BASE_URL}/generate-form-answers`,
   generateEvaluation: `${SAIP_BASE_URL}/generate-evaluation`,
@@ -23,6 +28,9 @@ export const SAIP_ENDPOINTS = {
   autofillAudit: `${SAIP_BASE_URL}/autofill-audit`,
   autofillAuditForEncounter: (encounterId: string) =>
     `${SAIP_BASE_URL}/autofill-audit?encounter_id=${encodeURIComponent(encounterId)}`,
+  // Live transcription WebSocket (token passed as query param — browser WS can't set headers)
+  transcribeStream: (token: string) =>
+    `${SAIP_WS_BASE_URL}/transcribe-stream?token=${encodeURIComponent(token)}`,
 } as const;
 
 // ─── Supported EHR Domains ───────────────────────────────────────────────────

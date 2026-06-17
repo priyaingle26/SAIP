@@ -10,7 +10,14 @@ import type {
   EvaluationAnswersResponse,
   ApiResponse,
   FillLogEntry,
+  TranscriptTurn,
 } from './schemas';
+
+export interface FinalizeStreamResponse {
+  encounterId: string;
+  transcript: string;
+  turns: TranscriptTurn[];
+}
 
 async function authHeaders(): Promise<HeadersInit> {
   const token = await getAuthToken();
@@ -162,6 +169,46 @@ export async function fetchEvalCache(
       if (res.status === 404) return { success: false, error: 'not_found' };
       throw new Error(await res.text());
     }
+    const data = await res.json();
+    return { success: true, data };
+  } catch (err) {
+    return { success: false, error: String(err) };
+  }
+}
+
+// ─── Check whether the backend has Realtime streaming configured ─────────────
+export async function checkStreamingStatus(): Promise<boolean> {
+  try {
+    const headers = await authHeaders();
+    const res = await fetch(SAIP_ENDPOINTS.streamingStatus, { headers });
+    if (!res.ok) return false;
+    const data = await res.json();
+    return data?.available === true;
+  } catch {
+    return false;
+  }
+}
+
+// ─── Finalize a streaming session: upload webm blob + pre-streamed transcript ─
+export async function finalizeStream(
+  audioBlob: Blob,
+  transcript: string,
+  encounterId?: string,
+): Promise<ApiResponse<FinalizeStreamResponse>> {
+  try {
+    const token = await getAuthToken();
+    const form = new FormData();
+    form.append('audio', audioBlob, 'recording.webm');
+    form.append('transcript', transcript);
+    if (encounterId) form.append('encounter_id', encounterId);
+
+    const res = await fetch(SAIP_ENDPOINTS.transcribeFinalize, {
+      method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      body: form,
+    });
+
+    if (!res.ok) throw new Error(await res.text());
     const data = await res.json();
     return { success: true, data };
   } catch (err) {

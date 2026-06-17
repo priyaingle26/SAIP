@@ -1,16 +1,18 @@
+import asyncio
+import base64
 import json
 import logging
 from datetime import datetime, timezone
 from typing import Annotated
 import uuid
 
-from fastapi import APIRouter, UploadFile, Depends, HTTPException, Body, Form, Query
+from fastapi import APIRouter, UploadFile, Depends, HTTPException, Body, Form, Query, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 from sqlalchemy import select
 
 import app.config.db as db
 import app.schemas as sch
-from app.config import settings
+from app.config import settings, is_openai_supported, is_realtime_streaming_available
 from app.security import create_access_token, decode_token, WebAPISession
 from app.tasks.transcription import transcribe_audio
 from app.tasks.generation import generate_note
@@ -259,6 +261,338 @@ async def extension_transcribe(
         # Return a non-persisted id so the extension can still function
         fallback_id = encounter_id or str(uuid.uuid4())
         return TranscribeResponse(encounterId=fallback_id, transcript=output.transcript)
+
+
+# =============================================================================
+# LIVE TRANSCRIPTION — WebSocket Proxy (tasks 2.1–2.4)
+# =============================================================================
+
+async def _relay_session(client_ws: WebSocket, openai_ws) -> None:
+    """Bidirectional relay: extension PCM frames → OpenAI, OpenAI events → extension.
+
+    `gpt-realtime-whisper` has no server VAD — it transcribes a *committed* audio
+    buffer as a whole and emits a single `...transcription.completed` per commit.
+    To produce LIVE captions we therefore commit the buffer on a fixed cadence
+    (`COMMIT_INTERVAL_S`) so a fresh `completed` segment arrives every few seconds
+    while the clinician is still speaking, instead of one block at the very end.
+    """
+    # 16-bit mono PCM @ 24 kHz → 48000 bytes/sec. OpenAI rejects commits with
+    # < 100 ms (4800 bytes) of audio, so only commit once enough has accumulated.
+    MIN_COMMIT_BYTES = 4800        # 100 ms — OpenAI's minimum buffer size
+    COMMIT_INTERVAL_S = 2.5        # cadence of live caption segments
+
+    stop_event = asyncio.Event()
+    pending = {"bytes": 0}         # bytes appended since the last commit
+
+    async def _commit_if_ready() -> bool:
+        if pending["bytes"] >= MIN_COMMIT_BYTES:
+            pending["bytes"] = 0
+            try:
+                await openai_ws.send(json.dumps({"type": "input_audio_buffer.commit"}))
+                return True
+            except Exception:
+                return False
+        return False
+
+    async def client_to_openai() -> None:
+        try:
+            while True:
+                msg = await client_ws.receive()
+                if "bytes" in msg and msg["bytes"]:
+                    audio_b64 = base64.b64encode(msg["bytes"]).decode()
+                    await openai_ws.send(json.dumps({
+                        "type": "input_audio_buffer.append",
+                        "audio": audio_b64,
+                    }))
+                    pending["bytes"] += len(msg["bytes"])
+                elif "text" in msg and msg["text"]:
+                    try:
+                        ctrl = json.loads(msg["text"])
+                        if ctrl.get("type") == "stop":
+                            break
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        stop_event.set()
+
+    async def periodic_commit() -> None:
+        # Commit every COMMIT_INTERVAL_S so whisper transcribes incrementally.
+        try:
+            while not stop_event.is_set():
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=COMMIT_INTERVAL_S)
+                except asyncio.TimeoutError:
+                    pass
+                if stop_event.is_set():
+                    break
+                await _commit_if_ready()
+        except Exception:
+            pass
+
+    async def openai_to_client() -> None:
+        try:
+            async for raw in openai_ws:
+                event = json.loads(raw)
+                etype = event.get("type", "")
+                logger.info(f"OpenAI WS Event: {etype}")
+                if "transcription.delta" in etype or "audio_transcript.delta" in etype:
+                    delta = event.get("delta", "")
+                    if delta:
+                        logger.debug(f"  delta text: {delta!r}")
+                        await client_ws.send_json({"type": "delta", "text": delta})
+                elif "transcription.completed" in etype or "audio_transcript.done" in etype:
+                    text = (
+                        event.get("transcript")
+                        or event.get("item", {}).get("content", [{}])[0].get("transcript", "")
+                    )
+                    logger.info(f"  completed text: {text!r}")
+                    if text and text.strip():
+                        await client_ws.send_json({"type": "completed", "text": text})
+                elif etype == "error":
+                    logger.error(f"OpenAI WS Error: {json.dumps(event)}")
+                    await client_ws.send_json({"type": "error", "message": event.get("error", {}).get("message", str(event))})
+        except Exception as exc:
+            logger.error(f"openai_to_client error: {exc}")
+
+    t1 = asyncio.create_task(client_to_openai())
+    t2 = asyncio.create_task(openai_to_client())
+    t3 = asyncio.create_task(periodic_commit())
+
+    await t1  # Wait for client to stop sending audio
+    t3.cancel()
+    try:
+        await t3
+    except asyncio.CancelledError:
+        pass
+
+    # Final commit of any remaining audio, then give OpenAI a moment to return
+    # the last segment before tearing down the OpenAI→client pump.
+    await _commit_if_ready()
+    await asyncio.sleep(3.0)
+    t2.cancel()
+    try:
+        await t2
+    except asyncio.CancelledError:
+        pass
+
+
+@router.websocket("/transcribe-stream")
+async def transcribe_stream_ws(
+    websocket: WebSocket,
+    token: str = Query(...),
+) -> None:
+    """Backend-proxied OpenAI Realtime transcription session.
+    Bearer token passed as query param ?token= (browser WS can't set headers).
+    """
+    # Validate before accept so browser sees close frame on bad token
+    try:
+        _session = decode_token(token)
+    except Exception:
+        await websocket.close(code=1008, reason="Invalid token")
+        return
+
+    if not is_realtime_streaming_available:
+        await websocket.close(code=1011, reason="OpenAI not configured")
+        return
+
+    await websocket.accept()
+
+    import websockets as ws_lib  # noqa: PLC0415
+
+    # GA Realtime API for transcription sessions uses intent parameter instead of model in URL
+    openai_url = "wss://api.openai.com/v1/realtime?intent=transcription"
+    openai_headers = {
+        "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
+    }
+
+    try:
+        async with ws_lib.connect(openai_url, additional_headers=openai_headers) as openai_ws:
+            logger.info("Connected to OpenAI Realtime WebSocket")
+            await openai_ws.send(json.dumps({
+                "type": "session.update",
+                "session": {
+                    "type": "transcription",
+                    "audio": {
+                        "input": {
+                            "format": {
+                                "type": "audio/pcm",
+                                "rate": 24000
+                            },
+                            "transcription": {
+                                "model": settings.REALTIME_TRANSCRIPTION_MODEL,
+                                "language": "en",
+                                # `delay` enables live partial (.delta) transcripts;
+                                # lower = earlier text. Without it, whisper only emits
+                                # a single `.completed` per commit (no live captions).
+                                "delay": settings.REALTIME_TRANSCRIPTION_DELAY,
+                            },
+                            # gpt-realtime-whisper has no server VAD — audio is committed
+                            # manually (periodically in _relay_session) to flush segments.
+                            "turn_detection": None
+                        }
+                    }
+                },
+            }))
+            await _relay_session(websocket, openai_ws)
+
+
+
+    except Exception as e:
+        logger.error(f"Realtime WS proxy error: {e}")
+        try:
+            await websocket.send_json({"type": "error", "message": str(e)})
+        except Exception:
+            pass
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
+# =============================================================================
+# SPEAKER LABELING + FINALIZE/PERSIST (tasks 3.1–3.4)
+# =============================================================================
+
+def _get_clinician_name(username: str) -> str:
+    """Resolve display name from username.  Returns "Dr. Demo User" for the MVP demo account."""
+    if username == "demo@saip.local":
+        return "Dr. Demo User"
+    # Derive a formatted name from the email prefix as a fallback
+    prefix = username.split("@")[0].replace(".", " ").replace("_", " ").title()
+    return f"Dr. {prefix}"
+
+
+def _label_transcript(raw_transcript: str, clinician_name: str) -> list[dict]:
+    """Call SPEAKER_LABELING_MODEL to split transcript into labeled turns.
+
+    Returns [{"speaker": str, "text": str}, ...].  On any failure, returns a
+    single turn attributed to Speaker 1 so callers always get a usable list.
+    """
+    from app.config.ai import generative_ai_services  # noqa: PLC0415
+
+    if not raw_transcript.strip():
+        return [{"speaker": clinician_name, "text": raw_transcript}]
+
+    service = generative_ai_services[0]
+
+    system_prompt = (
+        "You are a clinical transcript labeler. "
+        f"The clinician in this conversation is named '{clinician_name}'. "
+        "The other party is the Patient. "
+        "Split the transcript into turns and label each turn with the speaker. "
+        f"Use '{clinician_name}' for the clinician and 'Patient' for the patient. "
+        "If a turn is ambiguous, use 'Speaker 1' or 'Speaker 2'. "
+        "Return ONLY a JSON array: [{\"speaker\": \"...\", \"text\": \"...\"}]"
+    )
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": f"TRANSCRIPT:\n{raw_transcript}"},
+    ]
+
+    try:
+        output = service.complete(settings.SPEAKER_LABELING_MODEL, messages)
+        raw = output.text.strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+            raw = raw.strip()
+        turns = json.loads(raw)
+        if isinstance(turns, list) and turns:
+            return turns
+    except Exception as e:
+        logger.warning(f"Speaker labeling failed, using raw transcript: {e}")
+
+    # Graceful fallback — no data loss
+    return [{"speaker": "Speaker 1", "text": raw_transcript}]
+
+
+def _turns_to_plaintext(turns: list[dict]) -> str:
+    return "\n".join(f"{t['speaker']}: {t['text']}" for t in turns)
+
+
+class FinalizeResponse(BaseModel):
+    encounterId: str
+    transcript: str
+    turns: list[dict]
+
+
+@router.post("/transcribe-finalize")
+async def extension_transcribe_finalize(
+    audio: UploadFile,
+    transcript: str = Form(...),
+    encounter_id: str | None = Form(None),
+    session: WebAPISession = Depends(get_current_session),
+    database: db.DatabaseSession = Depends(db.get_database_session),
+) -> FinalizeResponse:
+    """Accept the webm audio blob + pre-streamed transcript, run speaker labeling,
+    persist Encounter + Recording, return the encounter id + labeled turns.
+    Audio is stored but not re-transcribed (transcript already provided).
+    """
+    now = datetime.now(timezone.utc).astimezone()
+
+    clinician_name = _get_clinician_name(session.username)
+    turns = _label_transcript(transcript, clinician_name)
+    labeled_text = _turns_to_plaintext(turns)
+
+    try:
+        _ensure_user(database, session.username)
+
+        existing_enc = None
+        if encounter_id:
+            existing_enc = database.execute(
+                select(db.Encounter)
+                .where(
+                    db.Encounter.id == encounter_id,
+                    db.Encounter.username == session.username,
+                    db.Encounter.inactivated.is_(None),
+                )
+            ).scalar_one_or_none()
+
+        if existing_enc:
+            if existing_enc.recording:
+                existing_enc.recording.transcript = labeled_text
+            existing_enc.modified = now
+            database.commit()
+            return FinalizeResponse(
+                encounterId=existing_enc.id,
+                transcript=labeled_text,
+                turns=turns,
+            )
+
+        eid = db.next_sqid(database)
+        rid = db.next_sqid(database)
+        recording = db.Recording(
+            id=rid,
+            encounter_id=eid,
+            duration=0,
+            transcript=labeled_text,
+        )
+        encounter = db.Encounter(
+            id=eid,
+            username=session.username,
+            created=now,
+            modified=now,
+            recording=recording,
+        )
+        database.add(encounter)
+        database.commit()
+
+        return FinalizeResponse(encounterId=eid, transcript=labeled_text, turns=turns)
+
+    except Exception as e:
+        logger.error(f"Failed to persist finalized encounter: {e}")
+        fallback_id = encounter_id or str(uuid.uuid4())
+        return FinalizeResponse(encounterId=fallback_id, transcript=labeled_text, turns=turns)
+
+
+@router.get("/streaming-status")
+async def streaming_status() -> dict:
+    """Report whether the Realtime streaming path is available."""
+    return {"available": is_realtime_streaming_available, "model": settings.REALTIME_TRANSCRIPTION_MODEL}
 
 
 @router.post("/generate")

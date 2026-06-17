@@ -1,6 +1,9 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { login, logout, getStoredUser } from '../../lib/auth';
-import type { SaipUser, ClinicalNote, Encounter, ExtensionMessage } from '../../lib/schemas';
+import type {
+  SaipUser, ClinicalNote, Encounter, ExtensionMessage,
+  TranscriptTurn, StreamFinalizedPayload,
+} from '../../lib/schemas';
 import RecordingTimer from '../../components/RecordingTimer';
 import TranscriptView from '../../components/TranscriptView';
 import GeneratedNoteView from '../../components/GeneratedNoteView';
@@ -45,6 +48,65 @@ function LogoMark({ size = 26 }: { size?: number }) {
   );
 }
 
+// ─── Labeled transcript display ───────────────────────────────────────────────
+function LabeledTranscriptView({
+  turns,
+  editable,
+  onChange,
+}: {
+  turns: TranscriptTurn[];
+  editable: boolean;
+  onChange?: (turns: TranscriptTurn[]) => void;
+}) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
+      {turns.map((turn, i) => (
+        <div key={i} style={{
+          borderRadius: 'var(--radius-sm)',
+          padding: 'var(--space-2) var(--space-3)',
+          background: turn.speaker === 'Patient' ? 'var(--color-surface)' : 'var(--color-primary-subtle)',
+          border: '1px solid var(--color-border)',
+        }}>
+          <span style={{
+            fontSize: 'var(--text-xs)',
+            fontWeight: 700,
+            textTransform: 'uppercase',
+            letterSpacing: '0.06em',
+            color: turn.speaker === 'Patient' ? 'var(--color-muted)' : 'var(--color-primary)',
+            display: 'block',
+            marginBottom: 'var(--space-1)',
+          }}>
+            {turn.speaker}
+          </span>
+          {editable ? (
+            <textarea
+              value={turn.text}
+              onChange={(e) => {
+                if (!onChange) return;
+                const updated = [...turns];
+                updated[i] = { ...turn, text: e.target.value };
+                onChange(updated);
+              }}
+              rows={Math.max(2, Math.ceil(turn.text.length / 60))}
+              style={{
+                ...INPUT_STYLE,
+                width: '100%',
+                resize: 'vertical',
+                fontSize: 'var(--text-sm)',
+                fontFamily: 'var(--font-body)',
+              }}
+            />
+          ) : (
+            <p style={{ fontSize: 'var(--text-sm)', margin: 0, lineHeight: 1.5 }}>
+              {turn.text}
+            </p>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function App() {
   const [user, setUser] = useState<SaipUser | null>(null);
   const [email, setEmail] = useState('');
@@ -62,37 +124,97 @@ export default function App() {
   const [currentEncounterId, setCurrentEncounterId] = useState<string | null>(null);
   const [encounters, setEncounters] = useState<Encounter[]>([]);
   const [activeTab, setActiveTab] = useState<Tab>('record');
-  
+
+  // ── Live streaming state ────────────────────────────────────────────────────
+  const [isStreaming, setIsStreaming] = useState(false);       // backend WS is open
+  const [liveCaption, setLiveCaption] = useState('');          // running delta text
+  const [committedLines, setCommittedLines] = useState<string[]>([]); // completed utterances
+  const [labeledTurns, setLabeledTurns] = useState<TranscriptTurn[]>([]);
+  const [showLabeledTranscript, setShowLabeledTranscript] = useState(false);
+  const captionEndRef = useRef<HTMLDivElement>(null);
+
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
-  // ─── Bootstrap: check auth & load encounters ─────────────────────────────
   useEffect(() => {
     getStoredUser().then(setUser);
     loadEncounters();
   }, []);
 
+  // Auto-scroll live captions to bottom
+  useEffect(() => {
+    captionEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [liveCaption, committedLines]);
+
   // ─── Listen for background messages ──────────────────────────────────────
   useEffect(() => {
     const handler = (message: ExtensionMessage) => {
-      if (message.type === 'RECORDING_STARTED') setIsRecording(true);
-      if (message.type === 'RECORDING_STOPPED') setIsRecording(false);
-      if (message.type === 'TRANSCRIBE_COMPLETE') {
-        const p = message.payload as { encounterId: string; transcript: string };
-        setCurrentEncounterId(p.encounterId);
-        setTranscript(p.transcript);
-        setProcessingStep('Generating clinical note…');
-      }
-      if (message.type === 'GENERATE_COMPLETE') {
-        const p = message.payload as { note: ClinicalNote; encounterId: string };
-        setGeneratedNote(p.note);
-        setIsProcessing(false);
-        setProcessingStep('');
-        setActiveTab('note');
-        loadEncounters();
-      }
-      if (message.type === 'ERROR') {
-        setIsProcessing(false);
-        setProcessingError(message.error ?? 'Unknown error');
+      switch (message.type) {
+        case 'RECORDING_STARTED':
+          setIsRecording(true);
+          break;
+
+        case 'RECORDING_STOPPED':
+          setIsRecording(false);
+          break;
+
+        case 'STREAM_START':
+          setIsStreaming(true);
+          setLiveCaption('');
+          setCommittedLines([]);
+          break;
+
+        case 'STREAM_DELTA': {
+          const p = message.payload as { delta: string };
+          setLiveCaption((prev) => prev + p.delta);
+          break;
+        }
+
+        case 'STREAM_COMPLETED': {
+          const p = message.payload as { completed: string };
+          setCommittedLines((prev) => [...prev, p.completed]);
+          setLiveCaption('');
+          break;
+        }
+
+        case 'STREAM_ERROR':
+          setIsStreaming(false);
+          // Streaming failed — batch fallback kicks in; show a non-blocking hint
+          setProcessingStep('Streaming unavailable, using batch transcription…');
+          break;
+
+        case 'STREAM_FINALIZED': {
+          const p = message.payload as StreamFinalizedPayload;
+          setCurrentEncounterId(p.encounterId);
+          setTranscript(p.transcript);
+          setLabeledTurns(p.turns);
+          setShowLabeledTranscript(true);
+          setIsStreaming(false);
+          setProcessingStep('Generating clinical note…');
+          break;
+        }
+
+        case 'TRANSCRIBE_COMPLETE': {
+          const p = message.payload as { encounterId: string; transcript: string };
+          setCurrentEncounterId(p.encounterId);
+          setTranscript(p.transcript);
+          setProcessingStep('Generating clinical note…');
+          break;
+        }
+
+        case 'GENERATE_COMPLETE': {
+          const p = message.payload as { note: ClinicalNote; encounterId: string };
+          setGeneratedNote(p.note);
+          setIsProcessing(false);
+          setProcessingStep('');
+          setActiveTab('note');
+          loadEncounters();
+          break;
+        }
+
+        case 'ERROR':
+          setIsProcessing(false);
+          setProcessingError(message.error ?? 'Unknown error');
+          break;
       }
     };
     chrome.runtime.onMessage.addListener(handler);
@@ -124,13 +246,13 @@ export default function App() {
     setUser(null);
     setTranscript('');
     setGeneratedNote(null);
+    setLabeledTurns([]);
+    setShowLabeledTranscript(false);
   }
 
   // ─── Recording ───────────────────────────────────────────────────────────
   const handleStartRecording = useCallback(async () => {
     try {
-      // Request mic permission in the visible UI (Side Panel) first —
-      // Chrome blocks offscreen documents from showing permission prompts
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       stream.getTracks().forEach(t => t.stop());
 
@@ -138,6 +260,10 @@ export default function App() {
       setTranscript('');
       setGeneratedNote(null);
       setProcessingError('');
+      setLiveCaption('');
+      setCommittedLines([]);
+      setLabeledTurns([]);
+      setShowLabeledTranscript(false);
 
       const existing = await chrome.offscreen.hasDocument();
       if (!existing) {
@@ -156,9 +282,9 @@ export default function App() {
   const handleStopRecording = useCallback(() => {
     setIsRecording(false);
     setIsProcessing(true);
-    setProcessingStep('Uploading & transcribing audio…');
+    setProcessingStep(isStreaming ? 'Finalizing & labeling transcript…' : 'Uploading & transcribing audio…');
     chrome.runtime.sendMessage({ target: 'offscreen', type: 'STOP_RECORDING' });
-  }, []);
+  }, [isStreaming]);
 
   const handleFileUpload = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -170,23 +296,22 @@ export default function App() {
     setTranscript('');
     setGeneratedNote(null);
     setProcessingError('');
+    setLabeledTurns([]);
+    setShowLabeledTranscript(false);
 
     const reader = new FileReader();
     reader.onloadend = () => {
       const result = reader.result as string;
       const base64 = result.split(',')[1];
-      const mimeType = file.type || 'audio/webm';
-      
+      const mime = file.type || 'audio/webm';
       const port = chrome.runtime.connect({ name: 'saip-audio' });
-      port.postMessage({ audioBase64: base64, mimeType });
+      port.postMessage({ audioBase64: base64, mimeType: mime });
     };
     reader.onerror = () => {
       setIsProcessing(false);
       setProcessingError('Failed to read file');
     };
     reader.readAsDataURL(file);
-    
-    // Reset input
     event.target.value = '';
   }, []);
 
@@ -202,7 +327,6 @@ export default function App() {
     return (
       <div style={loginWrap}>
         <div style={loginCard}>
-          {/* Brand */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', marginBottom: 'var(--space-1)' }}>
             <LogoMark size={32} />
             <span style={{ fontFamily: 'var(--font-heading)', fontSize: 'var(--text-lg)', fontWeight: 700, color: 'var(--color-primary)' }}>
@@ -310,7 +434,6 @@ export default function App() {
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 'var(--space-2)' }}>
             {/* Record ring + button */}
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 'var(--space-5)', paddingTop: 'var(--space-4)' }}>
-              {/* Animated ring */}
               <div
                 style={{
                   width: 120,
@@ -335,6 +458,23 @@ export default function App() {
                   {isRecording ? <RecordingTimer /> : <MicIcon size={32} />}
                 </div>
               </div>
+
+              {/* Streaming indicator badge */}
+              {isRecording && isStreaming && (
+                <div style={{
+                  display: 'flex', alignItems: 'center', gap: 'var(--space-1)',
+                  padding: '2px var(--space-2)',
+                  borderRadius: 'var(--radius-full)',
+                  background: 'var(--color-success-bg, #d1fae5)',
+                  border: '1px solid var(--color-success-border, #6ee7b7)',
+                  fontSize: 'var(--text-xs)',
+                  color: 'var(--color-success, #059669)',
+                  fontWeight: 600,
+                }}>
+                  <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'currentColor', animation: 'saip-pulse-ring-rec 1s ease-in-out infinite' }} />
+                  Live
+                </div>
+              )}
 
               <input
                 type="file"
@@ -392,11 +532,40 @@ export default function App() {
               </Banner>
             )}
 
-            {transcript && (
+            {/* ── Live captions (shown during recording when streaming is active) ── */}
+            {(isRecording || isStreaming) && (committedLines.length > 0 || liveCaption) && (
               <div style={{ width: '100%' }}>
-                <p style={{ fontSize: 'var(--text-xs)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', color: 'var(--color-muted)', marginBottom: 'var(--space-2)' }}>
-                  Live Transcript
-                </p>
+                <p style={captionLabel}>Live Captions</p>
+                <div style={captionBox}>
+                  {committedLines.map((line, i) => (
+                    <p key={i} style={{ margin: 0, lineHeight: 1.55, fontSize: 'var(--text-sm)' }}>{line}</p>
+                  ))}
+                  {liveCaption && (
+                    <p style={{ margin: 0, lineHeight: 1.55, fontSize: 'var(--text-sm)', color: 'var(--color-muted)', fontStyle: 'italic' }}>
+                      {liveCaption}
+                    </p>
+                  )}
+                  <div ref={captionEndRef} />
+                </div>
+              </div>
+            )}
+
+            {/* ── Labeled transcript (shown after streaming finalize) ── */}
+            {!isRecording && showLabeledTranscript && labeledTurns.length > 0 && (
+              <div style={{ width: '100%' }}>
+                <p style={captionLabel}>Labeled Transcript</p>
+                <LabeledTranscriptView
+                  turns={labeledTurns}
+                  editable
+                  onChange={setLabeledTurns}
+                />
+              </div>
+            )}
+
+            {/* ── Batch transcript fallback ── */}
+            {!isRecording && !showLabeledTranscript && transcript && (
+              <div style={{ width: '100%' }}>
+                <p style={captionLabel}>Transcript</p>
                 <TranscriptView transcript={transcript} />
               </div>
             )}
@@ -434,7 +603,7 @@ export default function App() {
   );
 }
 
-// ─── Styles (token-referenced only, no hardcoded values) ─────────────────────
+// ─── Styles ───────────────────────────────────────────────────────────────────
 
 const panelStyle: React.CSSProperties = {
   display: 'flex',
@@ -515,4 +684,25 @@ const emptyState: React.CSSProperties = {
   gap: 'var(--space-2)',
   padding: 'var(--space-8) var(--space-5)',
   textAlign: 'center',
+};
+
+const captionLabel: React.CSSProperties = {
+  fontSize: 'var(--text-xs)',
+  fontWeight: 700,
+  textTransform: 'uppercase',
+  letterSpacing: '0.07em',
+  color: 'var(--color-muted)',
+  marginBottom: 'var(--space-2)',
+};
+
+const captionBox: React.CSSProperties = {
+  padding: 'var(--space-3)',
+  borderRadius: 'var(--radius-md)',
+  background: 'var(--color-surface)',
+  border: '1px solid var(--color-border)',
+  maxHeight: 180,
+  overflowY: 'auto',
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 'var(--space-1)',
 };
