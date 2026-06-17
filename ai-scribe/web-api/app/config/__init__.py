@@ -21,7 +21,7 @@ import logging
 from dotenv import load_dotenv
 from app.config.package_checks import VLLM_AVAILABLE
 
-load_dotenv()
+load_dotenv(override=True)
 
 logger = logging.getLogger(__name__)
 
@@ -54,8 +54,14 @@ class Settings(BaseSettings):
     LABEL_MODEL: str = "llama3.1:8b"
     
     TRANSCRIPTION_SERVICE: Literal["OpenAI Whisper", "WhisperX", "AWS Transcribe", "Parakeet MLX"] = (
-        "Parakeet MLX"
+        "OpenAI Whisper"
     )
+    REALTIME_TRANSCRIPTION_MODEL: str = "gpt-realtime-whisper"
+    # Latency/quality tradeoff for live partial transcripts (gpt-realtime-whisper).
+    # Lower = earlier partial text, higher = more context before emitting.
+    # Allowed: minimal | low | medium | high | xhigh
+    REALTIME_TRANSCRIPTION_DELAY: str = "low"
+    SPEAKER_LABELING_MODEL: str = "gpt-4o-mini"
     GENERATIVE_AI_SERVICE: Literal["Ollama", "OpenAI", "AWS Bedrock", "VLLM", "LM Studio", "LlamaCpp", "Gemini"] = "Ollama"
     LOCAL_WHISPER_SERVICE_URL: str | None = None
 
@@ -103,7 +109,7 @@ class Settings(BaseSettings):
     # LlamaCpp server (llama-server) defaults to http://localhost:8080
     LLAMA_CPP_SERVER_URL: str | None = "http://localhost:8080"
 
-    model_config = SettingsConfigDict(env_file=".env", case_sensitive=True)
+    model_config = SettingsConfigDict(case_sensitive=True)
 
 
 settings = Settings()  
@@ -134,6 +140,8 @@ is_vllm_supported: bool = (
 is_lm_studio_supported: bool = settings.LM_STUDIO_SERVER_URL is not None
 
 is_llama_cpp_supported: bool = settings.LLAMA_CPP_SERVER_URL is not None
+
+is_realtime_streaming_available: bool = is_openai_supported
 
 def get_available_services() -> dict:
     """Get a dictionary of all available services and their options."""

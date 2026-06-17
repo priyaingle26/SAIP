@@ -1,8 +1,8 @@
 
-import { transcribeAudio, generateNote, fetchEncounters } from '../lib/apiClient';
-import { verifyToken } from '../lib/auth';
-import { STORAGE_KEYS } from '../lib/constants';
-import type { ExtensionMessage, Encounter } from '../lib/schemas';
+import { transcribeAudio, generateNote, fetchEncounters, finalizeStream, checkStreamingStatus } from '../lib/apiClient';
+import { verifyToken, getAuthToken } from '../lib/auth';
+import { STORAGE_KEYS, SAIP_ENDPOINTS } from '../lib/constants';
+import type { ExtensionMessage, Encounter, StreamFinalizedPayload } from '../lib/schemas';
 
 export default defineBackground(() => {
   // Open Side Panel when the action icon is clicked
@@ -12,16 +12,31 @@ export default defineBackground(() => {
     }
   });
 
-  // ── Port listener: receives audio blob from offscreen recorder ──────────────
-  // We use ports instead of sendMessage to bypass WXT's dev-mode message interceptor
+  // ── saip-audio port: receives the final webm blob from offscreen ────────────
+  // Used both for batch transcription AND (with streamingTranscript set) finalize
   chrome.runtime.onConnect.addListener((port) => {
-    if (port.name !== 'saip-audio') return;
-    port.onMessage.addListener(async (payload: { audioBase64: string; mimeType: string; encounterId?: string }) => {
-      await processAudio(payload.audioBase64, payload.mimeType, payload.encounterId);
-    });
+    if (port.name === 'saip-audio') {
+      port.onMessage.addListener(async (payload: {
+        audioBase64: string;
+        mimeType: string;
+        encounterId?: string;
+      }) => {
+        if (streamingTranscript !== null) {
+          // Streaming path: finalize with the assembled transcript
+          await finalizeStreamingSession(payload.audioBase64, payload.mimeType);
+        } else {
+          // Batch path: upload and transcribe server-side
+          await processAudio(payload.audioBase64, payload.mimeType, payload.encounterId);
+        }
+      });
+    }
+
+    if (port.name === 'saip-stream') {
+      handleStreamPort(port);
+    }
   });
 
-  // ── Standard message router (AUTOFILL_REQUEST, AUTH_REQUEST, etc.) ──────────
+  // ── Standard message router ────────────────────────────────────────────────
   chrome.runtime.onMessage.addListener(
     (message: ExtensionMessage, _sender, sendResponse) => {
       if (message.type === 'AUTH_REQUEST' || message.type === 'AUTOFILL_REQUEST') {
@@ -31,14 +46,175 @@ export default defineBackground(() => {
     }
   );
 
-  // Sync encounters on startup if user is logged in
   syncEncounters();
 });
 
-// ─── Process audio blob: transcribe → generate note → notify side panel ───────
+// ─── Streaming session state ─────────────────────────────────────────────────
+
+let realtimeWs: WebSocket | null = null;
+let streamingTranscript: string | null = null; // null = not in streaming mode
+let streamingDeltaBuffer = '';                 // accumulates current partial utterance
+
+// ─── Handle the saip-stream port from offscreen ──────────────────────────────
+
+function handleStreamPort(port: chrome.runtime.Port) {
+  port.onMessage.addListener(async (msg: { type: string; frame?: string }) => {
+    switch (msg.type) {
+      case 'STREAM_START':
+        await openRealtimeWs();
+        break;
+
+      case 'STREAM_PCM_FRAME':
+        if (realtimeWs?.readyState === WebSocket.OPEN && msg.frame) {
+          // Decode base64 → ArrayBuffer and send as binary to backend WS
+          const binary = atob(msg.frame);
+          const bytes = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+          realtimeWs.send(bytes.buffer);
+        }
+        break;
+
+      case 'STREAM_STOP':
+        // Signal the backend to commit the audio buffer and wait for final events
+        if (realtimeWs?.readyState === WebSocket.OPEN) {
+          realtimeWs.send(JSON.stringify({ type: 'stop' }));
+        }
+        break;
+    }
+  });
+
+  port.onDisconnect.addListener(() => {
+    // Offscreen disconnected — close WS if still open
+    realtimeWs?.close();
+  });
+}
+
+// ─── Open the backend-proxied Realtime WebSocket ──────────────────────────────
+
+async function openRealtimeWs() {
+  streamingTranscript = '';
+  streamingDeltaBuffer = '';
+
+  const token = await getAuthToken();
+  if (!token) {
+    // Not authenticated — fall back to batch
+    streamingTranscript = null;
+    return;
+  }
+
+  // Check whether backend has OpenAI configured
+  const statusOk = await checkStreamingStatus();
+  if (!statusOk) {
+    streamingTranscript = null;
+    chrome.runtime.sendMessage({ type: 'STREAM_ERROR', error: 'Streaming unavailable — using batch transcription' });
+    return;
+  }
+
+  const url = SAIP_ENDPOINTS.transcribeStream(token);
+
+  try {
+    realtimeWs = new WebSocket(url);
+    realtimeWs.binaryType = 'arraybuffer';
+
+    realtimeWs.onopen = () => {
+      chrome.runtime.sendMessage({ type: 'STREAM_START' });
+    };
+
+    realtimeWs.onmessage = (ev) => {
+      try {
+        const event = JSON.parse(ev.data as string) as { type: string; text?: string; message?: string };
+        if (event.type === 'delta' && event.text) {
+          streamingDeltaBuffer += event.text;
+          chrome.runtime.sendMessage({ type: 'STREAM_DELTA', payload: { delta: event.text } });
+        } else if (event.type === 'completed' && event.text) {
+          // Commit utterance to assembled transcript
+          if (streamingTranscript !== null) {
+            streamingTranscript += (streamingTranscript ? ' ' : '') + event.text;
+          }
+          streamingDeltaBuffer = '';
+          chrome.runtime.sendMessage({ type: 'STREAM_COMPLETED', payload: { completed: event.text } });
+        } else if (event.type === 'error') {
+          chrome.runtime.sendMessage({ type: 'STREAM_ERROR', error: event.message ?? 'Stream error' });
+        }
+      } catch {
+        // ignore
+      }
+    };
+
+    realtimeWs.onerror = () => {
+      // WS error — fall back to batch (streamingTranscript stays set; finalizeStreamingSession handles null check)
+      streamingTranscript = null;
+      realtimeWs = null;
+    };
+
+    realtimeWs.onclose = () => {
+      realtimeWs = null;
+    };
+  } catch {
+    streamingTranscript = null;
+    realtimeWs = null;
+  }
+}
+
+// ─── Finalize streaming session: label + persist ─────────────────────────────
+
+async function finalizeStreamingSession(audioBase64: string, mimeType: string) {
+  const transcript = streamingTranscript ?? '';
+  streamingTranscript = null;
+  streamingDeltaBuffer = '';
+
+  if (!transcript) {
+    // Nothing was transcribed — fall through to batch
+    await processAudio(audioBase64, mimeType);
+    return;
+  }
+
+  chrome.runtime.sendMessage({ type: 'TRANSCRIBE_COMPLETE', payload: { transcript } });
+
+  try {
+    const byteChars = atob(audioBase64);
+    const bytes = new Uint8Array(byteChars.length);
+    for (let i = 0; i < byteChars.length; i++) bytes[i] = byteChars.charCodeAt(i);
+    const blob = new Blob([bytes], { type: mimeType });
+
+    const result = await finalizeStream(blob, transcript);
+    if (!result.success || !result.data) {
+      chrome.runtime.sendMessage({ type: 'ERROR', error: result.error });
+      return;
+    }
+
+    const { encounterId: eid, transcript: labeled, turns } = result.data;
+
+    // Generate note using the labeled transcript
+    const generateResult = await generateNote(eid, labeled);
+    if (!generateResult.success || !generateResult.data) {
+      chrome.runtime.sendMessage({ type: 'ERROR', error: generateResult.error });
+      return;
+    }
+
+    await saveEncounterLocally({
+      id: eid,
+      clientName: 'Current Session',
+      date: new Date().toISOString(),
+      status: 'generated',
+      transcript: labeled,
+      generatedNote: generateResult.data.note,
+    });
+
+    chrome.runtime.sendMessage({
+      type: 'STREAM_FINALIZED',
+      payload: { encounterId: eid, transcript: labeled, turns } satisfies StreamFinalizedPayload,
+    });
+    chrome.runtime.sendMessage({ type: 'GENERATE_COMPLETE', payload: generateResult.data });
+  } catch (err) {
+    chrome.runtime.sendMessage({ type: 'ERROR', error: String(err) });
+  }
+}
+
+// ─── Batch path (unchanged, also serves as fallback) ─────────────────────────
+
 async function processAudio(audioBase64: string, mimeType: string, encounterId?: string) {
   try {
-    // Convert base64 to Blob
     const byteChars = atob(audioBase64);
     const bytes = new Uint8Array(byteChars.length);
     for (let i = 0; i < byteChars.length; i++) {
@@ -46,7 +222,6 @@ async function processAudio(audioBase64: string, mimeType: string, encounterId?:
     }
     const blob = new Blob([bytes], { type: mimeType });
 
-    // Step 1: Transcribe (backend now persists Encounter + Recording, returns a stable sqid)
     const transcribeResult = await transcribeAudio(blob, encounterId);
     if (!transcribeResult.success || !transcribeResult.data) {
       chrome.runtime.sendMessage({ type: 'ERROR', error: transcribeResult.error });
@@ -59,14 +234,12 @@ async function processAudio(audioBase64: string, mimeType: string, encounterId?:
       payload: { encounterId: eid, transcript },
     });
 
-    // Step 2: Generate note
     const generateResult = await generateNote(eid, transcript);
     if (!generateResult.success || !generateResult.data) {
       chrome.runtime.sendMessage({ type: 'ERROR', error: generateResult.error });
       return;
     }
 
-    // Persist locally so the side panel can show it immediately
     await saveEncounterLocally({
       id: eid,
       clientName: 'Current Session',
@@ -116,7 +289,6 @@ async function handleMessage(
       }
 
       default:
-        // Let WXT handle unknown messages silently — don't error for internal WXT traffic
         break;
     }
   } catch (err) {
@@ -127,12 +299,10 @@ async function handleMessage(
 async function saveEncounterLocally(encounter: Encounter) {
   const result = await chrome.storage.local.get(STORAGE_KEYS.encounters);
   const existing = (result[STORAGE_KEYS.encounters] ?? []) as Encounter[];
-  // Prepend new and remove any prior entry with the same id
   const updated = [encounter, ...existing.filter((e) => e.id !== encounter.id)];
   await chrome.storage.local.set({ [STORAGE_KEYS.encounters]: updated });
 }
 
-// Merge backend encounters with local cache — never delete unsynced local entries.
 async function syncEncounters() {
   const user = await verifyToken();
   if (!user) return;
@@ -144,13 +314,8 @@ async function syncEncounters() {
   const local = await chrome.storage.local.get(STORAGE_KEYS.encounters);
   const localList = (local[STORAGE_KEYS.encounters] ?? []) as Encounter[];
 
-  // Build a map of backend encounters by id for O(1) lookup
   const backendById = new Map(backendList.map((e) => [e.id, e]));
-
-  // Keep local-only entries (not yet synced to backend) and merge them at the end
   const localOnly = localList.filter((e) => !backendById.has(e.id));
-
-  // Merge: backend list (authoritative) + unsynced local entries
   const merged = [...backendList, ...localOnly];
   await chrome.storage.local.set({ [STORAGE_KEYS.encounters]: merged });
 }

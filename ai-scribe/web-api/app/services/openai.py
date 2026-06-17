@@ -6,6 +6,7 @@ import openai
 from openai import AsyncOpenAI, NotGiven, OpenAI
 from openai.types.chat import ChatCompletionMessageParam
 
+from app.config import settings
 from app.errors import (
     ExternalServiceError,
     ExternalServiceInterruption,
@@ -29,7 +30,7 @@ class OpenAITranscriptionService(TranscriptionService):
         prompt: str | None = None,
     ) -> TranscriptionOutput:
         try:
-            openai_client = AsyncOpenAI(timeout=None, max_retries=0)
+            openai_client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY, timeout=None, max_retries=0)
             response = await openai_client.audio.transcriptions.create(
                 model="whisper-1",
                 file=(filename, audio_file, content_type),
@@ -71,7 +72,7 @@ class OpenAIGenerativeAIService(GenerativeAIService):
     ) -> GenerationOutput:
         try:
             with ExecutionTimer() as timer:
-                openai_client = OpenAI(timeout=None, max_retries=0)
+                openai_client = OpenAI(api_key=settings.OPENAI_API_KEY, timeout=None, max_retries=0)
                 response = openai_client.chat.completions.create(
                     model=model,
                     messages=cast(Iterable[ChatCompletionMessageParam], messages),

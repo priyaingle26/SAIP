@@ -49,3 +49,72 @@ a form-specific case in the engine = bad, it can break the others.
 When verifying against a live form, capture the DOM (inspector) and adjust the
 **profile** to the real structure; only change the **engine** when the fix is
 genuinely generic across forms.
+
+---
+
+## Speaker diarization: problem analysis and proposed fix
+
+### Why it doesn't work today
+
+We capture a **single microphone stream**. The OpenAI Realtime API transcribes
+everything it hears into one text stream with no speaker markers — the audio is a
+mix of both voices and the API has no way to separate them acoustically.
+
+After recording, `_label_transcript` sends the entire assembled transcript (one
+concatenated string) to GPT-4o-mini and asks it to split it into speaker turns.
+This is extremely hard because:
+
+1. The LLM has no acoustic information — only the words themselves.
+2. The transcript is one blob with all natural boundaries discarded.
+3. In clinical conversations both parties often use similar short phrases, making
+   text-only classification unreliable.
+
+### The structural opportunity we are wasting
+
+OpenAI's server-side VAD (Voice Activity Detection) already detects when speech
+ends. Each `STREAM_COMPLETED` event IS one natural utterance — a speech boundary
+detected acoustically. Currently `background.ts` concatenates all completed text
+into one string, **throwing away this structure entirely**.
+
+If instead we pass an ordered array of per-utterance strings to the finalize
+endpoint, the LLM only needs to answer "Doctor or Patient?" for each short
+utterance, not split a blob. This is a dramatically easier classification task.
+
+### Options
+
+| Option | Description | Accuracy | Effort | Risk |
+|--------|-------------|----------|--------|------|
+| **A — preserve VAD turn structure** | Track `completedTurns: string[]` in `background.ts`; send array to `/transcribe-finalize`; LLM classifies each turn individually | High | Low | None |
+| **B — better labeling prompt** | Rewrite system prompt with clinical role signals: medical terminology → clinician, symptom descriptions → patient, alternating Q&A pattern | Medium | Very low | None |
+| **C — acoustic diarization (pyannote / WhisperX)** | Process the webm blob with speaker diarization after recording ends; proper voice fingerprinting | Very high | High | New ML dep, pyannote license, slow |
+| **D — two-microphone setup** | Separate device mic for patient | Perfect | Not feasible | Browser extension cannot do this |
+
+### Recommendation: ship A + B together, leave C for later
+
+**Option A** fixes the structural root cause with minimal code changes:
+- `background.ts`: add `streamingTurns: string[]`, push each `STREAM_COMPLETED`
+  text into it alongside assembling `streamingTranscript`.
+- `apiClient.ts`: `finalizeStream` sends `turns_json` (JSON-serialized array) as an
+  additional form field.
+- `extension_api.py` `/transcribe-finalize`: accept optional `turns_json: str`
+  form field; parse and pass to `_label_transcript`.
+- `_label_transcript`: when turns array is provided, send numbered utterances
+  (`Turn 1: …\nTurn 2: …`) so the LLM classifies each individually.
+
+**Option B** is a one-file change (the system prompt in `_label_transcript`) and
+stacks on top of A for free.
+
+**Option C** is a future enhancement. The webm blob is always captured regardless
+of streaming, so it can be added later without changing the extension.
+
+### Files that change (A + B)
+
+| File | Change |
+|------|--------|
+| `extension/entrypoints/background.ts` | Add `streamingTurns: string[]`; push on each `STREAM_COMPLETED`; pass to `finalizeStream` |
+| `extension/lib/apiClient.ts` | `finalizeStream` adds `turns_json` form field |
+| `ai-scribe/web-api/app/routers/extension_api.py` | `/transcribe-finalize` accepts `turns_json`; `_label_transcript` rewritten with clinical prompt + turn-aware path |
+
+No schema changes needed. No new dependencies. The batch fallback path is
+unchanged. If `turns_json` is absent (e.g. fallback from batch), labeling still
+works on the raw transcript string.
