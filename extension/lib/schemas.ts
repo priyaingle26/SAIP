@@ -64,6 +64,7 @@ export type MessageType =
   | 'AUTH_SUCCESS'
   | 'AUTH_FAILURE'
   | 'ERROR'
+  | 'SET_PATIENT'
   // Live streaming
   | 'STREAM_START'
   | 'STREAM_DELTA'
@@ -117,12 +118,14 @@ export interface FormAnswersRequest {
   transcript: string;
   clinicalNote: string;
   encounterId?: string;
+  patientId?: string;
 }
 
 export interface FormAnswersResponse {
   formType: string;
   confidence: number;
   fields: Record<string, string>;
+  confirmedProfileValues?: Record<string, string>;
 }
 
 // ─── Evaluation bundle types (Psych Eval, E&M EPT — design.md D7) ────────────
@@ -160,6 +163,34 @@ export interface FillLogEntry {
   frameUrl: string;
   ts: number;
   confidence?: number;
+}
+
+// ─── Patient Management ───────────────────────────────────────────────────────
+
+export interface Patient {
+  id: string;
+  name: string;
+  dob?: string;
+  credibleClientId?: string;
+  created: string;
+  modified: string;
+}
+
+export interface ProfileField {
+  id: string;
+  fieldKey: string;
+  value: string;
+  provenance: 'suggested' | 'confirmed';
+  sourceEncounterId?: string;
+  confirmedBy?: string;
+  updated: string;
+  isCurrent: boolean;
+  history: ProfileField[];
+}
+
+export interface PatientProfile {
+  patientId: string;
+  fields: ProfileField[];
 }
 
 // ─── Live Streaming Transcription ────────────────────────────────────────────

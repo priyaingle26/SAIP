@@ -587,11 +587,32 @@ export interface AutofillResult {
   labelsSeen: string[];
 }
 
-export function applyFormAutofill(formType: string, fields: Record<string, string>): AutofillResult {
+/**
+ * @param confirmedProfileValues Optional map of field_key → value sourced from
+ *   patient profile fields with provenance='confirmed'.  Confirmed values take
+ *   precedence over AI-generated values for the same key, and a scored-widget
+ *   field that is successfully filled from a confirmed value is removed from
+ *   manualRequired.  This is the generic mechanism: no form-specific logic.
+ */
+export function applyFormAutofill(
+  formType: string,
+  fields: Record<string, string>,
+  confirmedProfileValues?: Record<string, string>,
+): AutofillResult {
   const profile = getProfileById(formType);
   if (!profile) {
     return { filled: 0, missed: Object.keys(fields), manualRequired: [], labelsSeen: [] };
   }
+
+  // Merge: confirmed values from the patient profile override AI-generated ones
+  const effectiveFields: Record<string, string> = confirmedProfileValues
+    ? {
+        ...fields,
+        ...Object.fromEntries(
+          Object.entries(confirmedProfileValues).filter(([, v]) => v?.trim()),
+        ),
+      }
+    : fields;
 
   const textareaLabelMap = buildCredibleLabelMap();
 
@@ -602,11 +623,12 @@ export function applyFormAutofill(formType: string, fields: Record<string, strin
 
   let filled = 0;
   const missed: string[] = [];
+  const confirmedFilledKeys = new Set<string>(); // scored-widget keys filled from confirmed profile values
 
   // mse-group fields are matched as a batch (grouping is computed once).
   const mseFields = profile.fields.filter((f) => f.type === 'mse-group');
   if (mseFields.length) {
-    const result = applyMseGroups(mseFields, fields);
+    const result = applyMseGroups(mseFields, effectiveFields);
     filled += result.filled;
     missed.push(...result.missed);
   }
@@ -614,7 +636,7 @@ export function applyFormAutofill(formType: string, fields: Record<string, strin
   for (const field of profile.fields) {
     if (field.type === 'mse-group') continue; // handled above
 
-    const value = fields[field.key];
+    const value = effectiveFields[field.key];
     if (!value || !value.trim()) continue;
 
     let ok = false;
@@ -641,6 +663,11 @@ export function applyFormAutofill(formType: string, fields: Record<string, strin
         break;
       case 'scored-widget':
         ok = fillScoredWidget(field.labels, value);
+        if (ok && confirmedProfileValues?.[field.key]?.trim()) {
+          // This scored widget was filled from a confirmed patient profile value —
+          // it should not appear in manualRequired (no "needs manual entry" note).
+          confirmedFilledKeys.add(field.key);
+        }
         break;
       case 'checkbox-group':
         if (field.key === 'participants') {
@@ -655,7 +682,21 @@ export function applyFormAutofill(formType: string, fields: Record<string, strin
     else missed.push(field.key);
   }
 
-  const manualRequired = detectScoredWidgets();
+  // Detect scored widgets that still need manual entry.
+  // Exclude widgets whose group was successfully filled from a confirmed profile value.
+  const allScoredWidgets = detectScoredWidgets();
+  const manualRequired = confirmedFilledKeys.size > 0
+    ? allScoredWidgets.filter((widgetId) => {
+        // Keep in manualRequired only if none of the confirmedFilledKeys correspond
+        // to a field that already ran fillScoredWidget successfully.  Since widgetId
+        // is a DOM element ID we can't map 1-to-1, so we conservatively remove the
+        // entire manualRequired list when ALL scored-widget fields were confirmed-filled.
+        const scoredFields = profile.fields.filter((f) => f.type === 'scored-widget');
+        const allConfirmed = scoredFields.every((f) => confirmedFilledKeys.has(f.key));
+        return !allConfirmed;
+      })
+    : allScoredWidgets;
+
   const labelsSeen = Array.from(textareaLabelMap.keys());
 
   return { filled, missed, manualRequired, labelsSeen };

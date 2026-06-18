@@ -11,6 +11,9 @@ import type {
   ApiResponse,
   FillLogEntry,
   TranscriptTurn,
+  Patient,
+  PatientProfile,
+  ProfileField,
 } from './schemas';
 
 export interface FinalizeStreamResponse {
@@ -30,13 +33,15 @@ async function authHeaders(): Promise<HeadersInit> {
 // ─── Upload audio blob and trigger transcription ─────────────────────────────
 export async function transcribeAudio(
   audioBlob: Blob,
-  encounterId?: string
+  encounterId?: string,
+  patientId?: string,
 ): Promise<ApiResponse<TranscribeResponse>> {
   try {
     const token = await getAuthToken();
     const form = new FormData();
     form.append('audio', audioBlob, 'recording.webm');
     if (encounterId) form.append('encounter_id', encounterId);
+    if (patientId) form.append('patient_id', patientId);
 
     const res = await fetch(SAIP_ENDPOINTS.transcribe, {
       method: 'POST',
@@ -55,14 +60,15 @@ export async function transcribeAudio(
 // ─── Generate clinical note from transcript ───────────────────────────────────
 export async function generateNote(
   encounterId: string,
-  transcript: string
+  transcript: string,
+  patientId?: string,
 ): Promise<ApiResponse<GenerateResponse>> {
   try {
     const headers = await authHeaders();
     const res = await fetch(SAIP_ENDPOINTS.generate, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ encounter_id: encounterId, transcript }),
+      body: JSON.stringify({ encounter_id: encounterId, transcript, patient_id: patientId }),
     });
     if (!res.ok) throw new Error(await res.text());
     const data = await res.json();
@@ -194,6 +200,7 @@ export async function finalizeStream(
   audioBlob: Blob,
   transcript: string,
   encounterId?: string,
+  patientId?: string,
 ): Promise<ApiResponse<FinalizeStreamResponse>> {
   try {
     const token = await getAuthToken();
@@ -201,6 +208,7 @@ export async function finalizeStream(
     form.append('audio', audioBlob, 'recording.webm');
     form.append('transcript', transcript);
     if (encounterId) form.append('encounter_id', encounterId);
+    if (patientId) form.append('patient_id', patientId);
 
     const res = await fetch(SAIP_ENDPOINTS.transcribeFinalize, {
       method: 'POST',
@@ -211,6 +219,66 @@ export async function finalizeStream(
     if (!res.ok) throw new Error(await res.text());
     const data = await res.json();
     return { success: true, data };
+  } catch (err) {
+    return { success: false, error: String(err) };
+  }
+}
+
+// ─── Patient management ───────────────────────────────────────────────────────
+
+export async function searchPatients(q: string): Promise<ApiResponse<Patient[]>> {
+  try {
+    const headers = await authHeaders();
+    const res = await fetch(SAIP_ENDPOINTS.patientsSearch(q), { headers });
+    if (!res.ok) throw new Error(await res.text());
+    return { success: true, data: await res.json() };
+  } catch (err) {
+    return { success: false, error: String(err) };
+  }
+}
+
+export async function createPatient(
+  name: string,
+  dob?: string,
+  credibleClientId?: string,
+): Promise<ApiResponse<Patient>> {
+  try {
+    const headers = await authHeaders();
+    const res = await fetch(SAIP_ENDPOINTS.patients, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ name, dob, credibleClientId }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return { success: true, data: await res.json() };
+  } catch (err) {
+    return { success: false, error: String(err) };
+  }
+}
+
+export async function fetchPatientProfile(patientId: string): Promise<ApiResponse<PatientProfile>> {
+  try {
+    const headers = await authHeaders();
+    const res = await fetch(SAIP_ENDPOINTS.patientProfile(patientId), { headers });
+    if (!res.ok) throw new Error(await res.text());
+    return { success: true, data: await res.json() };
+  } catch (err) {
+    return { success: false, error: String(err) };
+  }
+}
+
+export async function confirmProfileField(
+  patientId: string,
+  fieldKey: string,
+): Promise<ApiResponse<ProfileField>> {
+  try {
+    const headers = await authHeaders();
+    const res = await fetch(SAIP_ENDPOINTS.confirmProfileField(patientId, fieldKey), {
+      method: 'POST',
+      headers,
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return { success: true, data: await res.json() };
   } catch (err) {
     return { success: false, error: String(err) };
   }

@@ -31,6 +31,13 @@ export const SAIP_ENDPOINTS = {
   // Live transcription WebSocket (token passed as query param — browser WS can't set headers)
   transcribeStream: (token: string) =>
     `${SAIP_WS_BASE_URL}/transcribe-stream?token=${encodeURIComponent(token)}`,
+  // Patient management
+  patients: `${SAIP_BASE_URL}/patients`,
+  patientsSearch: (q: string) => `${SAIP_BASE_URL}/patients/search?q=${encodeURIComponent(q)}`,
+  patient: (id: string) => `${SAIP_BASE_URL}/patients/${id}`,
+  patientProfile: (id: string) => `${SAIP_BASE_URL}/patients/${id}/profile`,
+  confirmProfileField: (patientId: string, fieldKey: string) =>
+    `${SAIP_BASE_URL}/patients/${patientId}/profile/${encodeURIComponent(fieldKey)}/confirm`,
 } as const;
 
 // ─── Supported EHR Domains ───────────────────────────────────────────────────

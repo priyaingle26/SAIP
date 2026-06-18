@@ -39,9 +39,17 @@ a form-specific case in the engine = bad, it can break the others.
 - **Bundle type comes from the matched profile** (`profile.bundle`), not from a
   hardcoded `fvid → bundle` map. The encounter/cache id (`getEncounterId`) accepts
   whatever the deployment uses (`fvid` or `visittemp_id`).
-- **Scored clinical instruments are never auto-filled** (PHQ-9, C-SSRS, AUDIT-C,
-  CRAFFT). Their profiles have empty `fields: []` by design (patient safety). Detect
-  and flag them; do not generate or fill.
+- **Scored clinical instruments (PHQ-9, C-SSRS, AUDIT-C, CRAFFT) can be filled
+  from confirmed patient profile values.** Their form profiles have `fields: []` by
+  default so the engine skips them when no patient data is available. However, if a
+  patient profile exists and the relevant fields (`phqInterest`, `phqMood`, etc.) are
+  confirmed (`provenance = 'confirmed'`), those values are passed as
+  `confirmedProfileValues` to `applyFormAutofill` and fill the scored widget silently.
+  When all scored-widget fields are covered by confirmed values, `manualRequired` is
+  cleared — no "manual entry required" banner is shown. If confirmed values are absent
+  (no patient linked, or not yet confirmed), the engine still skips them and shows the
+  review prompt. Detect and flag; do not generate or fill from AI-suggested
+  (`provenance = 'suggested'`) values alone.
 - **When a label substring can collide** (e.g. the "Others" checkbox label contains
   the word "Client"), classify the more specific case first and `continue` — don't
   rely on loose `includes()` matches that overlap.

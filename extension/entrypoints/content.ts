@@ -83,11 +83,12 @@ export default defineContentScript({
         // ── Form Assistant autofill ─────────────────────────────────────────
         if (message.type === 'AUTOFILL_FORM_REQUEST') {
           try {
-            const { formType, fields } = message.payload as {
+            const { formType, fields, confirmedProfileValues } = message.payload as {
               formType: string;
               fields: Record<string, string>;
+              confirmedProfileValues?: Record<string, string>;
             };
-            const result = applyFormAutofill(formType, fields);
+            const result = applyFormAutofill(formType, fields, confirmedProfileValues);
             const logEntry = {
               formType,
               ...result,

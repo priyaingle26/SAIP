@@ -16,6 +16,12 @@ const ALL_FORM_TYPES = ALL_FORM_PROFILE_IDS;
 interface Props {
   transcript: string;
   clinicalNote: string;
+  /** ID of the selected patient — sent to the backend so it can inject confirmed
+   *  profile values into the AI prompt and return them for silent form fill. */
+  patientId?: string;
+  /** Confirmed patient profile values (fieldKey → value). Silently pre-fills
+   *  matching form fields without showing the "complete manually" note. */
+  confirmedProfileValues?: Record<string, string>;
 }
 
 type Step = 'detect' | 'generating' | 'review' | 'filling' | 'done' | 'error';
@@ -24,7 +30,7 @@ function toLabel(key: string): string {
   return key.replace(/([A-Z])/g, ' $1').replace(/^./, (s) => s.toUpperCase());
 }
 
-export default function FormAssistant({ transcript, clinicalNote }: Props) {
+export default function FormAssistant({ transcript, clinicalNote, patientId, confirmedProfileValues: confirmedProfileValuesProp }: Props) {
   const [step, setStep] = useState<Step>('detect');
   const [detectedForm, setDetectedForm] = useState<DetectedForm | null>(null);
   const [selectedFormType, setSelectedFormType] = useState('');
@@ -35,6 +41,9 @@ export default function FormAssistant({ transcript, clinicalNote }: Props) {
   const [error, setError] = useState('');
   const [lastLog, setLastLog] = useState<FillLogEntry | null>(null);
   const [showDebug, setShowDebug] = useState(false);
+  // Confirmed values: merge prop (pre-existing) with values returned by the backend
+  const [backendConfirmed, setBackendConfirmed] = useState<Record<string, string>>({});
+  const confirmedProfileValues = { ...confirmedProfileValuesProp, ...backendConfirmed };
 
   useEffect(() => {
     getLastFillLog().then(setLastLog);
@@ -68,8 +77,11 @@ export default function FormAssistant({ transcript, clinicalNote }: Props) {
 
     const profile = getProfileById(formType);
     if (profile && profile.fields.length === 0) {
-      setError(`${profile.displayName} is a scored clinical instrument and must be completed manually from the patient's own responses.`);
-      return;
+      const hasConfirmed = confirmedProfileValues && Object.keys(confirmedProfileValues).length > 0;
+      if (!hasConfirmed) {
+        setError(`${profile.displayName} requires clinician review. Use a recorded session to generate answers, then confirm each field in the patient profile first.`);
+        return;
+      }
     }
 
     if (!transcript && !clinicalNote) { setError('Record an encounter first to generate answers.'); return; }
@@ -102,16 +114,20 @@ export default function FormAssistant({ transcript, clinicalNote }: Props) {
       return;
     }
 
-    const result = await generateFormAnswers({ formType, formContext, transcript, clinicalNote });
+    const result = await generateFormAnswers({ formType, formContext, transcript, clinicalNote, patientId });
     if (!result.success || !result.data) {
       setError(result.error ?? 'Generation failed.');
       setStep('detect');
       return;
     }
+    // Store confirmed values returned by backend so they flow into the autofill engine
+    if (result.data.confirmedProfileValues) {
+      setBackendConfirmed(result.data.confirmedProfileValues);
+    }
     setFormAnswers(result.data);
     setEditedFields(result.data.fields);
     setStep('review');
-  }, [selectedFormType, formContext, transcript, clinicalNote, detectedForm]);
+  }, [selectedFormType, formContext, transcript, clinicalNote, detectedForm, patientId]);
 
   // ─── Fill the EHR form ───────────────────────────────────────────────────────
   const handleFill = useCallback(async () => {
@@ -126,7 +142,7 @@ export default function FormAssistant({ transcript, clinicalNote }: Props) {
 
       const response = await sendToFormFrame<ExtensionMessage>(tab.id, {
         type: 'AUTOFILL_FORM_REQUEST',
-        payload: { formType: formAnswers.formType, fields: editedFields },
+        payload: { formType: formAnswers.formType, fields: editedFields, confirmedProfileValues },
       });
 
       if (response?.type === 'AUTOFILL_FORM_COMPLETE') {

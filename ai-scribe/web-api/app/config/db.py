@@ -210,11 +210,47 @@ class NoteDefinition(Base):
     user: Mapped["User"] = relationship(back_populates="note_definitions")
 
 
+class Patient(Base):
+    __tablename__ = "patients"
+
+    id: Mapped[str] = sqid_column(primary_key=True)
+    username: Mapped[str] = mapped_column(ForeignKey("users.username"))
+    name: Mapped[str] = mapped_column(VARCHAR(255))
+    dob: Mapped[str | None] = mapped_column(VARCHAR(20))           # ISO date string
+    credible_client_id: Mapped[str | None] = mapped_column(VARCHAR(100))
+    created: Mapped[datetime] = mapped_column(DATETIME_TYPE)
+    modified: Mapped[datetime] = mapped_column(DATETIME_TYPE)
+    inactivated: Mapped[datetime | None] = mapped_column(DATETIME_TYPE)
+
+    user: Mapped["User"] = relationship()
+    profile_fields: Mapped[list["PatientProfileField"]] = relationship(
+        back_populates="patient", cascade="all, delete"
+    )
+    encounters: Mapped[list["Encounter"]] = relationship(back_populates="patient")
+
+
+class PatientProfileField(Base):
+    __tablename__ = "patient_profile_fields"
+
+    id: Mapped[str] = sqid_column(primary_key=True)
+    patient_id: Mapped[str] = mapped_column(ForeignKey("patients.id"))
+    field_key: Mapped[str] = mapped_column(VARCHAR(100))
+    value: Mapped[str]                                             # Text (any length)
+    provenance: Mapped[str] = mapped_column(VARCHAR(20))           # 'suggested' | 'confirmed'
+    source_encounter_id: Mapped[str | None] = sqid_column()
+    confirmed_by: Mapped[str | None] = mapped_column(VARCHAR(255))
+    updated: Mapped[datetime] = mapped_column(DATETIME_TYPE)
+    is_current: Mapped[bool] = mapped_column(default=True)
+
+    patient: Mapped["Patient"] = relationship(back_populates="profile_fields")
+
+
 class Encounter(Base):
     __tablename__ = "encounters"
 
     id: Mapped[str] = sqid_column(primary_key=True)
     username: Mapped[str] = mapped_column(ForeignKey("users.username"))
+    patient_id: Mapped[str | None] = mapped_column(ForeignKey("patients.id"), nullable=True)
     created: Mapped[datetime] = mapped_column(DATETIME_TYPE)
     modified: Mapped[datetime] = mapped_column(DATETIME_TYPE)
     label: Mapped[str | None] = mapped_column(VARCHAR(100))
@@ -224,6 +260,7 @@ class Encounter(Base):
     purged: Mapped[datetime | None] = mapped_column(DATETIME_TYPE)
 
     user: Mapped["User"] = relationship(back_populates="encounters")
+    patient: Mapped["Patient | None"] = relationship(back_populates="encounters")
     recording: Mapped["Recording"] = relationship(
         back_populates="encounter", cascade="all, delete"
     )

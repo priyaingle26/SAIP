@@ -37,6 +37,7 @@ class LoginResponse(BaseModel):
 class GenerateRequest(BaseModel):
     encounter_id: str
     transcript: str
+    patient_id: str | None = None
 
 class TranscribeResponse(BaseModel):
     encounterId: str
@@ -200,6 +201,7 @@ def _ensure_user(database: db.DatabaseSession, username: str) -> None:
 async def extension_transcribe(
     audio: UploadFile,
     encounter_id: str | None = Form(None),
+    patient_id: str | None = Form(None),
     session: WebAPISession = Depends(get_current_session),
     database: db.DatabaseSession = Depends(db.get_database_session),
 ) -> TranscribeResponse:
@@ -230,6 +232,8 @@ async def extension_transcribe(
             # Update the recording transcript on the existing encounter
             if existing_enc.recording:
                 existing_enc.recording.transcript = output.transcript
+            if patient_id and not existing_enc.patient_id:
+                existing_enc.patient_id = _validate_patient_ownership(database, patient_id, session.username)
             existing_enc.modified = now
             database.commit()
             return TranscribeResponse(encounterId=existing_enc.id, transcript=output.transcript)
@@ -237,6 +241,8 @@ async def extension_transcribe(
         # Create a new Encounter + Recording
         eid = db.next_sqid(database)
         rid = db.next_sqid(database)
+
+        validated_patient_id = _validate_patient_ownership(database, patient_id, session.username) if patient_id else None
 
         recording = db.Recording(
             id=rid,
@@ -247,6 +253,7 @@ async def extension_transcribe(
         encounter = db.Encounter(
             id=eid,
             username=session.username,
+            patient_id=validated_patient_id,
             created=now,
             modified=now,
             recording=recording,
@@ -525,6 +532,7 @@ async def extension_transcribe_finalize(
     audio: UploadFile,
     transcript: str = Form(...),
     encounter_id: str | None = Form(None),
+    patient_id: str | None = Form(None),
     session: WebAPISession = Depends(get_current_session),
     database: db.DatabaseSession = Depends(db.get_database_session),
 ) -> FinalizeResponse:
@@ -555,6 +563,8 @@ async def extension_transcribe_finalize(
         if existing_enc:
             if existing_enc.recording:
                 existing_enc.recording.transcript = labeled_text
+            if patient_id and not existing_enc.patient_id:
+                existing_enc.patient_id = _validate_patient_ownership(database, patient_id, session.username)
             existing_enc.modified = now
             database.commit()
             return FinalizeResponse(
@@ -563,6 +573,7 @@ async def extension_transcribe_finalize(
                 turns=turns,
             )
 
+        validated_patient_id = _validate_patient_ownership(database, patient_id, session.username) if patient_id else None
         eid = db.next_sqid(database)
         rid = db.next_sqid(database)
         recording = db.Recording(
@@ -574,6 +585,7 @@ async def extension_transcribe_finalize(
         encounter = db.Encounter(
             id=eid,
             username=session.username,
+            patient_id=validated_patient_id,
             created=now,
             modified=now,
             recording=recording,
@@ -691,6 +703,22 @@ async def extension_generate(
                 database.add(draft_note)
                 enc.modified = now
                 database.commit()
+
+                # Trigger single profile-update call if encounter is linked to a patient
+                patient_id_for_update = enc.patient_id or request.patient_id
+                if patient_id_for_update:
+                    try:
+                        patient = database.execute(
+                            select(db.Patient).where(
+                                db.Patient.id == patient_id_for_update,
+                                db.Patient.username == session.username,
+                                db.Patient.inactivated.is_(None),
+                            )
+                        ).scalar_one_or_none()
+                        if patient:
+                            _update_patient_profile(database, patient, enc.id, request.transcript, final_text)
+                    except Exception as pe:
+                        logger.error(f"Patient profile update failed (non-fatal): {pe}")
     except Exception as e:
         logger.error(f"Failed to persist draft note: {e}")
 
@@ -798,12 +826,14 @@ class FormAnswersRequest(BaseModel):
     transcript: str
     clinicalNote: str
     encounterId: str | None = None
+    patientId: str | None = None
 
 
 class FormAnswersResponse(BaseModel):
     formType: str
     confidence: float
     fields: dict
+    confirmedProfileValues: dict | None = None
 
 
 def _generate_structured_fields(schema: dict, subject_label: str, subject_value: str, form_context: str, transcript: str, clinical_note: str) -> dict:
@@ -877,9 +907,36 @@ async def extension_generate_form_answers(
                    f"Supported: {list(FORM_SCHEMAS.keys())}",
         )
 
+    # Fetch confirmed patient profile values to augment AI context and form fill
+    confirmed_profile: dict[str, str] = {}
+    if request.patientId:
+        try:
+            profile_rows = database.execute(
+                select(db.PatientProfileField)
+                .where(
+                    db.PatientProfileField.patient_id == request.patientId,
+                    db.PatientProfileField.is_current.is_(True),
+                )
+            ).scalars().all()
+            confirmed_profile = {
+                row.field_key: row.value
+                for row in profile_rows
+                if row.provenance == "confirmed"
+            }
+        except Exception as e:
+            logger.warning(f"Could not fetch patient profile for form answers: {e}")
+
+    # Build confirmed-profile context block to inject into the AI prompt
+    confirmed_context = ""
+    if confirmed_profile:
+        lines = "\n".join(f"- {k}: {v}" for k, v in confirmed_profile.items())
+        confirmed_context = (
+            f"\n\nCONFIRMED PATIENT PROFILE (clinician-verified — treat as ground truth):\n{lines}"
+        )
+
     fields = _generate_structured_fields(
         schema, "FORM TYPE", request.formType,
-        request.formContext, request.transcript, request.clinicalNote,
+        request.formContext, request.transcript, request.clinicalNote + confirmed_context,
     )
 
     # Persist as FormAnswerSet (upsert: latest generation wins)
@@ -904,6 +961,7 @@ async def extension_generate_form_answers(
         formType=request.formType,
         confidence=1.0,
         fields=fields,
+        confirmedProfileValues=confirmed_profile if confirmed_profile else None,
     )
 
 
@@ -1127,6 +1185,125 @@ async def create_autofill_audit(
     )
 
 
+# =============================================================================
+# PATIENT MANAGEMENT — Helpers
+# =============================================================================
+
+def _validate_patient_ownership(database: db.DatabaseSession, patient_id: str, username: str) -> str | None:
+    """Return patient_id if it belongs to username, else None (never raises)."""
+    try:
+        patient = database.execute(
+            select(db.Patient).where(
+                db.Patient.id == patient_id,
+                db.Patient.username == username,
+                db.Patient.inactivated.is_(None),
+            )
+        ).scalar_one_or_none()
+        return patient.id if patient else None
+    except Exception:
+        return None
+
+
+def _update_patient_profile(
+    database: db.DatabaseSession,
+    patient: db.Patient,
+    encounter_id: str,
+    transcript: str,
+    note: str,
+) -> None:
+    """Issue exactly one generative-AI call to extract profile fields and
+    merge them into the patient's profile via supersede-with-history.
+    All new values get provenance='suggested'.  Raises on AI failure so the
+    caller can catch and log without blocking note generation.
+    """
+    from app.config.ai import generative_ai_services  # noqa: PLC0415
+
+    # Field schema for the extraction call — demographics + PHQ-9 keys
+    PROFILE_FIELD_SCHEMA = {
+        "name": "Patient's full name if mentioned.",
+        "dob": "Date of birth in ISO format YYYY-MM-DD if mentioned, else empty string.",
+        "gender": "Patient's gender if mentioned, else empty string.",
+        "phone": "Phone number if mentioned, else empty string.",
+        "address": "Home address if mentioned, else empty string.",
+        "primaryDiagnosis": "Primary diagnosis or chief complaint if mentioned, else empty string.",
+        "medications": "Current medications as a comma-separated list if mentioned, else empty string.",
+        "allergies": "Known allergies if mentioned, else empty string.",
+        "phqInterest": "PHQ item: interest/pleasure. Score 0-3 or empty string if not assessable.",
+        "phqMood": "PHQ item: depressed/hopeless mood. Score 0-3 or empty string.",
+        "phqSleep": "PHQ item: sleep trouble. Score 0-3 or empty string.",
+        "phqEnergy": "PHQ item: fatigue/low energy. Score 0-3 or empty string.",
+        "phqAppetite": "PHQ item: appetite change. Score 0-3 or empty string.",
+        "phqSelfWorth": "PHQ item: feeling worthless/failure. Score 0-3 or empty string.",
+        "phqConcentration": "PHQ item: concentration difficulty. Score 0-3 or empty string.",
+        "phqPsychomotor": "PHQ item: psychomotor change. Score 0-3 or empty string.",
+        "phqSelfHarm": "PHQ item: self-harm thoughts. Score 0-3 or empty string.",
+        "phqDifficulty": "PHQ difficulty item. One of: Not difficult at all, Somewhat difficult, Very difficult, Extremely difficult. Empty string if not assessable.",
+    }
+
+    system_prompt = (
+        "You are a clinical data extraction assistant. "
+        "Given a patient encounter transcript and clinical note, extract known structured profile fields. "
+        "Return ONLY a flat JSON object with the keys listed in the schema. "
+        "Set a field to an empty string if the information was not clearly stated in the encounter. "
+        "Never invent information. Never fill PHQ scores unless the patient verbally reported them or the clinician assessed them during this encounter. "
+        "Return raw JSON, no markdown fences."
+    )
+
+    schema_desc = "\n".join(f"- {k}: {v}" for k, v in PROFILE_FIELD_SCHEMA.items())
+    user_prompt = (
+        f"SCHEMA:\n{schema_desc}\n\n"
+        f"TRANSCRIPT:\n{transcript[:6000]}\n\n"
+        f"CLINICAL NOTE:\n{note[:3000]}\n\n"
+        "Extract and return the JSON profile object."
+    )
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+
+    service = generative_ai_services[0]
+    output = service.complete(settings.SPEAKER_LABELING_MODEL, messages)
+    raw = output.text.strip()
+    if raw.startswith("```"):
+        raw = raw.split("```")[1]
+        if raw.startswith("json"):
+            raw = raw[4:]
+        raw = raw.strip()
+
+    extracted: dict = json.loads(raw)
+    now = datetime.now(timezone.utc).astimezone()
+
+    for field_key, value in extracted.items():
+        if not isinstance(value, str) or not value.strip():
+            continue  # skip empty / null fields
+
+        # Supersede-with-history: mark previous current rows for this key as non-current
+        database.execute(
+            db.PatientProfileField.__table__.update()
+            .where(
+                db.PatientProfileField.patient_id == patient.id,
+                db.PatientProfileField.field_key == field_key,
+                db.PatientProfileField.is_current.is_(True),
+            )
+            .values(is_current=False)
+        )
+
+        new_field = db.PatientProfileField(
+            id=db.next_sqid(database),
+            patient_id=patient.id,
+            field_key=field_key,
+            value=value.strip(),
+            provenance="suggested",
+            source_encounter_id=encounter_id,
+            is_current=True,
+            updated=now,
+        )
+        database.add(new_field)
+
+    database.commit()
+
+
 @router.get("/autofill-audit")
 async def list_autofill_audit(
     encounter_id: str = Query(...),
@@ -1153,3 +1330,318 @@ async def list_autofill_audit(
         )
         for r in rows
     ]
+
+
+# =============================================================================
+# PATIENT MANAGEMENT — API Endpoints (tasks 2.1–2.5, 3.4, 3.5)
+# =============================================================================
+
+class PatientOut(BaseModel):
+    id: str
+    name: str
+    dob: str | None = None
+    credibleClientId: str | None = None
+    created: str
+    modified: str
+
+
+class PatientCreate(BaseModel):
+    name: str
+    dob: str | None = None
+    credibleClientId: str | None = None
+
+
+class PatientUpdate(BaseModel):
+    name: str | None = None
+    dob: str | None = None
+    credibleClientId: str | None = None
+
+
+class ProfileFieldOut(BaseModel):
+    id: str
+    fieldKey: str
+    value: str
+    provenance: str
+    sourceEncounterId: str | None = None
+    confirmedBy: str | None = None
+    updated: str
+    isCurrent: bool
+    history: list["ProfileFieldOut"] = []
+
+
+ProfileFieldOut.model_rebuild()
+
+
+class PatientProfileOut(BaseModel):
+    patientId: str
+    fields: list[ProfileFieldOut]
+
+
+def _patient_out(p: db.Patient) -> PatientOut:
+    return PatientOut(
+        id=p.id,
+        name=p.name,
+        dob=p.dob,
+        credibleClientId=p.credible_client_id,
+        created=p.created.isoformat(),
+        modified=p.modified.isoformat(),
+    )
+
+
+def _field_out(f: db.PatientProfileField, history: list[db.PatientProfileField] | None = None) -> ProfileFieldOut:
+    return ProfileFieldOut(
+        id=f.id,
+        fieldKey=f.field_key,
+        value=f.value,
+        provenance=f.provenance,
+        sourceEncounterId=f.source_encounter_id,
+        confirmedBy=f.confirmed_by,
+        updated=f.updated.isoformat(),
+        isCurrent=f.is_current,
+        history=[_field_out(h) for h in (history or [])],
+    )
+
+
+@router.post("/patients", status_code=201)
+async def create_patient(
+    request: PatientCreate,
+    session: WebAPISession = Depends(get_current_session),
+    database: db.DatabaseSession = Depends(db.get_database_session),
+) -> PatientOut:
+    _ensure_user(database, session.username)
+    now = datetime.now(timezone.utc).astimezone()
+    pid = db.next_sqid(database)
+    patient = db.Patient(
+        id=pid,
+        username=session.username,
+        name=request.name,
+        dob=request.dob,
+        credible_client_id=request.credibleClientId,
+        created=now,
+        modified=now,
+    )
+    database.add(patient)
+    database.commit()
+    return _patient_out(patient)
+
+
+@router.patch("/patients/{patient_id}")
+async def update_patient(
+    patient_id: str,
+    request: PatientUpdate,
+    session: WebAPISession = Depends(get_current_session),
+    database: db.DatabaseSession = Depends(db.get_database_session),
+) -> PatientOut:
+    patient = database.execute(
+        select(db.Patient).where(
+            db.Patient.id == patient_id,
+            db.Patient.username == session.username,
+            db.Patient.inactivated.is_(None),
+        )
+    ).scalar_one_or_none()
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found")
+    if request.name is not None:
+        patient.name = request.name
+    if request.dob is not None:
+        patient.dob = request.dob
+    if request.credibleClientId is not None:
+        patient.credible_client_id = request.credibleClientId
+    patient.modified = datetime.now(timezone.utc).astimezone()
+    database.commit()
+    return _patient_out(patient)
+
+
+@router.get("/patients/search")
+async def search_patients(
+    q: str = Query(""),
+    session: WebAPISession = Depends(get_current_session),
+    database: db.DatabaseSession = Depends(db.get_database_session),
+) -> list[PatientOut]:
+    from sqlalchemy import or_
+    query = (
+        select(db.Patient)
+        .where(
+            db.Patient.username == session.username,
+            db.Patient.inactivated.is_(None),
+        )
+        .order_by(db.Patient.modified.desc())
+    )
+    if q.strip():
+        pattern = f"%{q.strip()}%"
+        query = query.where(
+            or_(
+                db.Patient.name.ilike(pattern),
+                db.Patient.credible_client_id.ilike(pattern),
+            )
+        )
+    patients = database.execute(query).scalars().all()
+    return [_patient_out(p) for p in patients]
+
+
+@router.get("/patients/{patient_id}")
+async def get_patient(
+    patient_id: str,
+    session: WebAPISession = Depends(get_current_session),
+    database: db.DatabaseSession = Depends(db.get_database_session),
+) -> PatientOut:
+    patient = database.execute(
+        select(db.Patient).where(
+            db.Patient.id == patient_id,
+            db.Patient.username == session.username,
+            db.Patient.inactivated.is_(None),
+        )
+    ).scalar_one_or_none()
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found")
+    return _patient_out(patient)
+
+
+@router.get("/patients/{patient_id}/profile")
+async def get_patient_profile(
+    patient_id: str,
+    session: WebAPISession = Depends(get_current_session),
+    database: db.DatabaseSession = Depends(db.get_database_session),
+) -> PatientProfileOut:
+    patient = database.execute(
+        select(db.Patient).where(
+            db.Patient.id == patient_id,
+            db.Patient.username == session.username,
+            db.Patient.inactivated.is_(None),
+        )
+    ).scalar_one_or_none()
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found")
+
+    # All field rows for this patient, sorted newest first
+    all_rows = database.execute(
+        select(db.PatientProfileField)
+        .where(db.PatientProfileField.patient_id == patient_id)
+        .order_by(db.PatientProfileField.updated.desc())
+    ).scalars().all()
+
+    # Group into current + history per field_key
+    current_by_key: dict[str, db.PatientProfileField] = {}
+    history_by_key: dict[str, list[db.PatientProfileField]] = {}
+    for row in all_rows:
+        if row.is_current:
+            current_by_key[row.field_key] = row
+        else:
+            history_by_key.setdefault(row.field_key, []).append(row)
+
+    fields = [
+        _field_out(f, history_by_key.get(f.field_key, []))
+        for f in current_by_key.values()
+    ]
+    return PatientProfileOut(patientId=patient_id, fields=fields)
+
+
+@router.post("/patients/{patient_id}/profile/{field_key}/confirm")
+async def confirm_profile_field(
+    patient_id: str,
+    field_key: str,
+    session: WebAPISession = Depends(get_current_session),
+    database: db.DatabaseSession = Depends(db.get_database_session),
+) -> ProfileFieldOut:
+    patient = database.execute(
+        select(db.Patient).where(
+            db.Patient.id == patient_id,
+            db.Patient.username == session.username,
+            db.Patient.inactivated.is_(None),
+        )
+    ).scalar_one_or_none()
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found")
+
+    field = database.execute(
+        select(db.PatientProfileField).where(
+            db.PatientProfileField.patient_id == patient_id,
+            db.PatientProfileField.field_key == field_key,
+            db.PatientProfileField.is_current.is_(True),
+        )
+    ).scalar_one_or_none()
+    if not field:
+        raise HTTPException(status_code=404, detail="Profile field not found")
+
+    field.provenance = "confirmed"
+    field.confirmed_by = session.username
+    field.updated = datetime.now(timezone.utc).astimezone()
+    database.commit()
+    return _field_out(field)
+
+
+@router.get("/patients/{patient_id}/encounters")
+async def get_patient_encounters(
+    patient_id: str,
+    session: WebAPISession = Depends(get_current_session),
+    database: db.DatabaseSession = Depends(db.get_database_session),
+) -> list[ExtEncounter]:
+    from sqlalchemy.orm import selectinload
+    patient = database.execute(
+        select(db.Patient).where(
+            db.Patient.id == patient_id,
+            db.Patient.username == session.username,
+            db.Patient.inactivated.is_(None),
+        )
+    ).scalar_one_or_none()
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found")
+
+    rows = database.execute(
+        select(db.Encounter)
+        .where(
+            db.Encounter.patient_id == patient_id,
+            db.Encounter.inactivated.is_(None),
+        )
+        .order_by(db.Encounter.created.desc())
+        .options(
+            selectinload(db.Encounter.recording),
+            selectinload(db.Encounter.draft_notes),
+        )
+    ).scalars().all()
+
+    result = []
+    for enc in rows:
+        transcript = enc.recording.transcript if enc.recording else None
+        active_notes = [n for n in enc.draft_notes if not n.inactivated]
+        note = ExtEncounterNote(raw=active_notes[-1].content) if active_notes else None
+        status = "generated" if note else ("transcribed" if transcript else "pending")
+        result.append(ExtEncounter(
+            id=enc.id,
+            clientName=enc.label or enc.autolabel or "Session",
+            date=enc.created.isoformat(),
+            status=status,
+            transcript=transcript,
+            generatedNote=note,
+        ))
+    return result
+
+
+@router.patch("/encounters/{encounter_id}/patient")
+async def assign_encounter_patient(
+    encounter_id: str,
+    patient_id: str | None = Body(None),
+    session: WebAPISession = Depends(get_current_session),
+    database: db.DatabaseSession = Depends(db.get_database_session),
+) -> dict:
+    enc = database.execute(
+        select(db.Encounter).where(
+            db.Encounter.id == encounter_id,
+            db.Encounter.username == session.username,
+            db.Encounter.inactivated.is_(None),
+        )
+    ).scalar_one_or_none()
+    if not enc:
+        raise HTTPException(status_code=404, detail="Encounter not found")
+
+    if patient_id is not None:
+        validated = _validate_patient_ownership(database, patient_id, session.username)
+        if not validated:
+            raise HTTPException(status_code=404, detail="Patient not found")
+        enc.patient_id = validated
+    else:
+        enc.patient_id = None
+
+    enc.modified = datetime.now(timezone.utc).astimezone()
+    database.commit()
+    return {"encounterId": encounter_id, "patientId": enc.patient_id}

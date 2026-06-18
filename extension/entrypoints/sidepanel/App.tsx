@@ -2,25 +2,36 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { login, logout, getStoredUser } from '../../lib/auth';
 import type {
   SaipUser, ClinicalNote, Encounter, ExtensionMessage,
-  TranscriptTurn, StreamFinalizedPayload,
+  TranscriptTurn, StreamFinalizedPayload, Patient, ProfileField,
 } from '../../lib/schemas';
 import RecordingTimer from '../../components/RecordingTimer';
 import TranscriptView from '../../components/TranscriptView';
 import GeneratedNoteView from '../../components/GeneratedNoteView';
 import EncounterHistory from '../../components/EncounterHistory';
 import FormAssistant from '../../components/FormAssistant';
+import { searchPatients, createPatient, fetchPatientProfile, confirmProfileField } from '../../lib/apiClient';
 import {
   TabBar, Button, Banner, Spinner, Divider,
   LogOutIcon, FileTextIcon, HistoryIcon, MicIcon, AlertIcon, UploadIcon,
   INPUT_STYLE,
 } from '../../components/ui';
 
-type Tab = 'record' | 'note' | 'history';
+type Tab = 'record' | 'note' | 'history' | 'patient';
+
+function PersonIcon({ size = 16 }: { size?: number }) {
+  return (
+    <svg aria-hidden="true" width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="8" cy="5" r="3" />
+      <path d="M2 14c0-3.314 2.686-6 6-6s6 2.686 6 6" />
+    </svg>
+  );
+}
 
 const TABS = [
   { id: 'record',  label: 'Record',  icon: <MicIcon size={14} /> },
   { id: 'note',    label: 'Note',    icon: <FileTextIcon size={14} /> },
   { id: 'history', label: 'History', icon: <HistoryIcon size={14} /> },
+  { id: 'patient', label: 'Patient', icon: <PersonIcon size={14} /> },
 ] as const;
 
 // ─── Logo mark ────────────────────────────────────────────────────────────────
@@ -124,6 +135,20 @@ export default function App() {
   const [currentEncounterId, setCurrentEncounterId] = useState<string | null>(null);
   const [encounters, setEncounters] = useState<Encounter[]>([]);
   const [activeTab, setActiveTab] = useState<Tab>('record');
+
+  // ── Patient management state ────────────────────────────────────────────────
+  const [selectedPatient, setSelectedPatient] = useState<Patient | null>(null);
+  const [patientQuery, setPatientQuery] = useState('');
+  const [patientResults, setPatientResults] = useState<Patient[]>([]);
+  const [patientSearching, setPatientSearching] = useState(false);
+  const [showCreatePatient, setShowCreatePatient] = useState(false);
+  const [newPatientName, setNewPatientName] = useState('');
+  const [newPatientDob, setNewPatientDob] = useState('');
+  const [creatingPatient, setCreatingPatient] = useState(false);
+  const [patientProfile, setPatientProfile] = useState<Array<ProfileField>>([]);
+  const [profileLoading, setProfileLoading] = useState(false);
+  const [confirmingField, setConfirmingField] = useState<string | null>(null);
+  const [showPatientPicker, setShowPatientPicker] = useState(false);
 
   // ── Live streaming state ────────────────────────────────────────────────────
   const [isStreaming, setIsStreaming] = useState(false);       // backend WS is open
@@ -322,6 +347,64 @@ export default function App() {
     setActiveTab('note');
   }
 
+  // ─── Patient handlers ─────────────────────────────────────────────────────
+  const handlePatientSearch = useCallback(async (q: string) => {
+    setPatientQuery(q);
+    if (!q.trim()) { setPatientResults([]); return; }
+    setPatientSearching(true);
+    const res = await searchPatients(q);
+    setPatientSearching(false);
+    if (res.success && res.data) setPatientResults(res.data);
+  }, []);
+
+  const handleSelectPatient = useCallback((patient: Patient | null) => {
+    setSelectedPatient(patient);
+    setPatientResults([]);
+    setPatientQuery('');
+    setShowPatientPicker(false);
+    // Inform background so recording picks up patient_id
+    chrome.runtime.sendMessage({ type: 'SET_PATIENT', payload: { patientId: patient?.id ?? null } });
+  }, []);
+
+  const handleCreatePatient = useCallback(async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newPatientName.trim()) return;
+    setCreatingPatient(true);
+    const res = await createPatient(newPatientName.trim(), newPatientDob || undefined);
+    setCreatingPatient(false);
+    if (res.success && res.data) {
+      setShowCreatePatient(false);
+      setNewPatientName('');
+      setNewPatientDob('');
+      handleSelectPatient(res.data);
+    }
+  }, [newPatientName, newPatientDob, handleSelectPatient]);
+
+  const loadPatientProfile = useCallback(async (patientId: string) => {
+    setProfileLoading(true);
+    const res = await fetchPatientProfile(patientId);
+    setProfileLoading(false);
+    if (res.success && res.data) setPatientProfile(res.data.fields);
+  }, []);
+
+  useEffect(() => {
+    if (activeTab === 'patient' && selectedPatient) {
+      void loadPatientProfile(selectedPatient.id);
+    }
+  }, [activeTab, selectedPatient, loadPatientProfile]);
+
+  const handleConfirmField = useCallback(async (fieldKey: string) => {
+    if (!selectedPatient) return;
+    setConfirmingField(fieldKey);
+    const res = await confirmProfileField(selectedPatient.id, fieldKey);
+    setConfirmingField(null);
+    if (res.success && res.data) {
+      setPatientProfile((prev) =>
+        prev.map((f) => f.fieldKey === fieldKey ? { ...f, provenance: res.data!.provenance } : f),
+      );
+    }
+  }, [selectedPatient]);
+
   // ─── Render: Login ────────────────────────────────────────────────────────
   if (!user) {
     return (
@@ -432,6 +515,83 @@ export default function App() {
         {/* ── Record Tab ── */}
         {activeTab === 'record' && (
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 'var(--space-2)' }}>
+
+            {/* ── Patient selector (compact) ── */}
+            <div style={{ width: '100%', background: 'var(--color-surface)', borderRadius: 'var(--radius-md)', border: '1px solid var(--color-border)', padding: 'var(--space-2) var(--space-3)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', color: selectedPatient ? 'var(--color-foreground)' : 'var(--color-muted)', fontSize: 'var(--text-sm)' }}>
+                  <PersonIcon size={14} />
+                  <span style={{ fontWeight: selectedPatient ? 600 : 400 }}>
+                    {selectedPatient ? selectedPatient.name : 'No patient selected (optional)'}
+                  </span>
+                </div>
+                <div style={{ display: 'flex', gap: 'var(--space-1)' }}>
+                  {selectedPatient && (
+                    <button type="button" aria-label="Clear patient" onClick={() => handleSelectPatient(null)} style={{ ...ghostIconBtn, width: 28, height: 28, fontSize: 'var(--text-xs)', color: 'var(--color-muted)' }}>
+                      ✕
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    aria-label={showPatientPicker ? 'Close patient picker' : 'Select patient'}
+                    onClick={() => setShowPatientPicker((v) => !v)}
+                    style={{ ...ghostIconBtn, width: 28, height: 28, fontSize: 'var(--text-xs)', background: showPatientPicker ? 'var(--color-primary-subtle)' : 'transparent' }}
+                  >
+                    {showPatientPicker ? '▲' : '▼'}
+                  </button>
+                </div>
+              </div>
+
+              {/* Patient search dropdown */}
+              {showPatientPicker && (
+                <div style={{ marginTop: 'var(--space-2)', display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
+                  <input
+                    type="text"
+                    placeholder="Search by name or Credible ID…"
+                    value={patientQuery}
+                    onChange={(e) => void handlePatientSearch(e.target.value)}
+                    autoFocus
+                    style={{ ...INPUT_STYLE, fontSize: 'var(--text-sm)' }}
+                  />
+                  {patientSearching && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-1)', fontSize: 'var(--text-xs)', color: 'var(--color-muted)' }}>
+                      <Spinner size={12} /> Searching…
+                    </div>
+                  )}
+                  {patientResults.length > 0 && (
+                    <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 'var(--space-1)', maxHeight: 160, overflowY: 'auto' }}>
+                      {patientResults.map((p) => (
+                        <li key={p.id}>
+                          <button
+                            type="button"
+                            onClick={() => handleSelectPatient(p)}
+                            style={{ width: '100%', textAlign: 'left', padding: 'var(--space-1) var(--space-2)', borderRadius: 'var(--radius-sm)', border: 'none', background: 'var(--color-bg)', cursor: 'pointer', fontSize: 'var(--text-sm)' }}
+                          >
+                            <span style={{ fontWeight: 500 }}>{p.name}</span>
+                            {p.dob && <span style={{ color: 'var(--color-muted)', marginLeft: 'var(--space-1)', fontSize: 'var(--text-xs)' }}>{p.dob}</span>}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  {!showCreatePatient ? (
+                    <button type="button" onClick={() => setShowCreatePatient(true)} style={{ alignSelf: 'flex-start', fontSize: 'var(--text-xs)', color: 'var(--color-primary)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
+                      + Create new patient
+                    </button>
+                  ) : (
+                    <form onSubmit={(e) => void handleCreatePatient(e)} style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)', padding: 'var(--space-2)', background: 'var(--color-primary-subtle)', borderRadius: 'var(--radius-sm)' }}>
+                      <input type="text" placeholder="Full name *" required value={newPatientName} onChange={(e) => setNewPatientName(e.target.value)} style={{ ...INPUT_STYLE, fontSize: 'var(--text-sm)' }} />
+                      <input type="date" placeholder="DOB" value={newPatientDob} onChange={(e) => setNewPatientDob(e.target.value)} style={{ ...INPUT_STYLE, fontSize: 'var(--text-sm)' }} />
+                      <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
+                        <Button type="submit" variant="primary" size="sm" loading={creatingPatient} style={{ flex: 1 }}>Create</Button>
+                        <Button type="button" variant="secondary" size="sm" onClick={() => setShowCreatePatient(false)} style={{ flex: 1 }}>Cancel</Button>
+                      </div>
+                    </form>
+                  )}
+                </div>
+              )}
+            </div>
+
             {/* Record ring + button */}
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 'var(--space-5)', paddingTop: 'var(--space-4)' }}>
               <div
@@ -582,6 +742,7 @@ export default function App() {
                 <FormAssistant
                   transcript={transcript}
                   clinicalNote={generatedNote.raw ?? ''}
+                  patientId={selectedPatient?.id}
                 />
               </>
             ) : (
@@ -597,6 +758,77 @@ export default function App() {
         {/* ── History Tab ── */}
         {activeTab === 'history' && (
           <EncounterHistory encounters={encounters} onSelect={handleSelectEncounter} />
+        )}
+
+        {/* ── Patient Tab ── */}
+        {activeTab === 'patient' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
+            {!selectedPatient ? (
+              <div style={emptyState}>
+                <div style={{ color: 'var(--color-muted-2)' }}><PersonIcon size={32} /></div>
+                <p style={{ fontSize: 'var(--text-base)', color: 'var(--color-muted)', fontWeight: 500 }}>No patient selected</p>
+                <p style={{ fontSize: 'var(--text-sm)', color: 'var(--color-muted-2)' }}>Use the patient picker in the Record tab to select or create a patient.</p>
+                <Button variant="primary" size="md" onClick={() => setActiveTab('record')} iconLeft={<PersonIcon size={14} />}>
+                  Select Patient
+                </Button>
+              </div>
+            ) : (
+              <>
+                {/* Patient header */}
+                <div style={{ background: 'var(--color-surface)', borderRadius: 'var(--radius-md)', border: '1px solid var(--color-border)', padding: 'var(--space-3)' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <div>
+                      <p style={{ fontWeight: 700, fontSize: 'var(--text-base)', margin: 0 }}>{selectedPatient.name}</p>
+                      {selectedPatient.dob && <p style={{ fontSize: 'var(--text-xs)', color: 'var(--color-muted)', margin: '2px 0 0' }}>DOB: {selectedPatient.dob}</p>}
+                    </div>
+                    <button type="button" onClick={() => handleSelectPatient(null)} style={{ ...ghostIconBtn, fontSize: 'var(--text-xs)' }} aria-label="Clear patient">✕</button>
+                  </div>
+                </div>
+
+                {/* Profile fields */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-1)' }}>
+                  <p style={captionLabel}>Longitudinal Profile</p>
+                  {profileLoading ? (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', color: 'var(--color-muted)', fontSize: 'var(--text-sm)' }}>
+                      <Spinner size={14} /> Loading…
+                    </div>
+                  ) : patientProfile.length === 0 ? (
+                    <div style={{ ...emptyState, padding: 'var(--space-5)' }}>
+                      <p style={{ fontSize: 'var(--text-sm)', color: 'var(--color-muted)' }}>No profile data yet.</p>
+                      <p style={{ fontSize: 'var(--text-xs)', color: 'var(--color-muted-2)' }}>Generate a clinical note for an encounter linked to this patient.</p>
+                    </div>
+                  ) : (
+                    patientProfile.map((field) => (
+                      <div key={field.id} style={{ background: 'var(--color-surface)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--color-border)', padding: 'var(--space-2) var(--space-3)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 'var(--space-2)' }}>
+                        <div style={{ minWidth: 0 }}>
+                          <p style={{ fontSize: 'var(--text-xs)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--color-muted)', margin: 0 }}>
+                            {field.fieldKey.replace(/([A-Z])/g, ' $1').replace(/^./, (s) => s.toUpperCase())}
+                          </p>
+                          <p style={{ fontSize: 'var(--text-sm)', margin: '2px 0 0', wordBreak: 'break-word' }}>{field.value}</p>
+                        </div>
+                        {/* Provenance chip — icon+text, never color-only */}
+                        {field.provenance === 'confirmed' ? (
+                          <span aria-label="Confirmed" style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--text-xs)', fontWeight: 600, color: '#059669', background: '#d1fae5', border: '1px solid #6ee7b7', borderRadius: 'var(--radius-full)', padding: '2px 8px' }}>
+                            ✓ Confirmed
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            aria-label={`Confirm field ${field.fieldKey}`}
+                            onClick={() => void handleConfirmField(field.fieldKey)}
+                            disabled={confirmingField === field.fieldKey}
+                            style={{ flexShrink: 0, minWidth: 44, minHeight: 44, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 4, fontSize: 'var(--text-xs)', fontWeight: 600, color: '#92400e', background: '#fef3c7', border: '1px solid #fcd34d', borderRadius: 'var(--radius-sm)', cursor: 'pointer', padding: '2px var(--space-2)' }}
+                          >
+                            {confirmingField === field.fieldKey ? <Spinner size={10} /> : '?'} {confirmingField === field.fieldKey ? '' : 'Confirm'}
+                          </button>
+                        )}
+                      </div>
+                    ))
+                  )}
+                </div>
+              </>
+            )}
+          </div>
         )}
       </main>
     </div>

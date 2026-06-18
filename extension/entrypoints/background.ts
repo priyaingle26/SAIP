@@ -25,8 +25,8 @@ export default defineBackground(() => {
           // Streaming path: finalize with the assembled transcript
           await finalizeStreamingSession(payload.audioBase64, payload.mimeType);
         } else {
-          // Batch path: upload and transcribe server-side
-          await processAudio(payload.audioBase64, payload.mimeType, payload.encounterId);
+          // Batch path: upload and transcribe server-side (carry patient if selected)
+          await processAudio(payload.audioBase64, payload.mimeType, payload.encounterId, sessionPatientId ?? undefined);
         }
       });
     }
@@ -43,6 +43,12 @@ export default defineBackground(() => {
         handleMessage(message, sendResponse);
         return true;
       }
+      // Allow side panel to set the active patient for the recording session
+      if (message.type === 'SET_PATIENT') {
+        sessionPatientId = (message.payload as { patientId: string | null })?.patientId ?? null;
+        sendResponse({ type: 'AUTH_SUCCESS' }); // reuse generic ack
+        return true;
+      }
     }
   );
 
@@ -54,6 +60,7 @@ export default defineBackground(() => {
 let realtimeWs: WebSocket | null = null;
 let streamingTranscript: string | null = null; // null = not in streaming mode
 let streamingDeltaBuffer = '';                 // accumulates current partial utterance
+let sessionPatientId: string | null = null;    // patient linked to the current recording session
 
 // ─── Handle the saip-stream port from offscreen ──────────────────────────────
 
@@ -160,6 +167,7 @@ async function openRealtimeWs() {
 
 async function finalizeStreamingSession(audioBase64: string, mimeType: string) {
   const transcript = streamingTranscript ?? '';
+  const patientId = sessionPatientId;
   streamingTranscript = null;
   streamingDeltaBuffer = '';
 
@@ -177,7 +185,7 @@ async function finalizeStreamingSession(audioBase64: string, mimeType: string) {
     for (let i = 0; i < byteChars.length; i++) bytes[i] = byteChars.charCodeAt(i);
     const blob = new Blob([bytes], { type: mimeType });
 
-    const result = await finalizeStream(blob, transcript);
+    const result = await finalizeStream(blob, transcript, undefined, patientId ?? undefined);
     if (!result.success || !result.data) {
       chrome.runtime.sendMessage({ type: 'ERROR', error: result.error });
       return;
@@ -185,8 +193,8 @@ async function finalizeStreamingSession(audioBase64: string, mimeType: string) {
 
     const { encounterId: eid, transcript: labeled, turns } = result.data;
 
-    // Generate note using the labeled transcript
-    const generateResult = await generateNote(eid, labeled);
+    // Generate note using the labeled transcript (carries patient_id for profile update)
+    const generateResult = await generateNote(eid, labeled, patientId ?? undefined);
     if (!generateResult.success || !generateResult.data) {
       chrome.runtime.sendMessage({ type: 'ERROR', error: generateResult.error });
       return;
@@ -213,7 +221,7 @@ async function finalizeStreamingSession(audioBase64: string, mimeType: string) {
 
 // ─── Batch path (unchanged, also serves as fallback) ─────────────────────────
 
-async function processAudio(audioBase64: string, mimeType: string, encounterId?: string) {
+async function processAudio(audioBase64: string, mimeType: string, encounterId?: string, patientId?: string) {
   try {
     const byteChars = atob(audioBase64);
     const bytes = new Uint8Array(byteChars.length);
@@ -222,7 +230,7 @@ async function processAudio(audioBase64: string, mimeType: string, encounterId?:
     }
     const blob = new Blob([bytes], { type: mimeType });
 
-    const transcribeResult = await transcribeAudio(blob, encounterId);
+    const transcribeResult = await transcribeAudio(blob, encounterId, patientId);
     if (!transcribeResult.success || !transcribeResult.data) {
       chrome.runtime.sendMessage({ type: 'ERROR', error: transcribeResult.error });
       return;
@@ -234,7 +242,7 @@ async function processAudio(audioBase64: string, mimeType: string, encounterId?:
       payload: { encounterId: eid, transcript },
     });
 
-    const generateResult = await generateNote(eid, transcript);
+    const generateResult = await generateNote(eid, transcript, patientId);
     if (!generateResult.success || !generateResult.data) {
       chrome.runtime.sendMessage({ type: 'ERROR', error: generateResult.error });
       return;
