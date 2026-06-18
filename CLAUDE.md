@@ -1,5 +1,12 @@
 # SAIP — Project Guidance for Claude
 
+## Git: commit messages
+
+Keep commit messages **short and crisp** — a single concise summary line describing
+what changed (a few extra bullet points only when the change genuinely needs them).
+**Never include any Claude/AI attribution** — no "Generated with Claude", no
+`Co-Authored-By: Claude`, no tool mentions. Plain, human-style messages only.
+
 ## Form autofill engine: keep it GENERIC, never hardcode per-case
 
 The Credible EHR form-fill engine (`extension/lib/fieldMapper.ts` + the declarative
@@ -39,17 +46,21 @@ a form-specific case in the engine = bad, it can break the others.
 - **Bundle type comes from the matched profile** (`profile.bundle`), not from a
   hardcoded `fvid → bundle` map. The encounter/cache id (`getEncounterId`) accepts
   whatever the deployment uses (`fvid` or `visittemp_id`).
-- **Scored clinical instruments (PHQ-9, C-SSRS, AUDIT-C, CRAFFT) can be filled
-  from confirmed patient profile values.** Their form profiles have `fields: []` by
-  default so the engine skips them when no patient data is available. However, if a
-  patient profile exists and the relevant fields (`phqInterest`, `phqMood`, etc.) are
-  confirmed (`provenance = 'confirmed'`), those values are passed as
-  `confirmedProfileValues` to `applyFormAutofill` and fill the scored widget silently.
-  When all scored-widget fields are covered by confirmed values, `manualRequired` is
-  cleared — no "manual entry required" banner is shown. If confirmed values are absent
-  (no patient linked, or not yet confirmed), the engine still skips them and shows the
-  review prompt. Detect and flag; do not generate or fill from AI-suggested
-  (`provenance = 'suggested'`) values alone.
+- **Scored clinical instruments (PHQ-9, etc.) are inferred from the conversation,
+  then clinician-reviewed.** The form-answer and profile extraction prompts INFER
+  0-3 symptom-frequency scores from how the patient describes a symptom — even
+  without a formal questionnaire Q&A — using a fixed mapping (`not at all` → 0,
+  `several days`/`sometimes` → 1, `more than half the days`/`often` → 2, `nearly
+  every day`/`almost always` → 3); a symptom the patient never indicates stays an
+  empty string (never fabricated). These inferred values are `provenance =
+  'suggested'` and surface in the Review & Edit panel (form) or as a "Confirm"
+  affordance (patient profile) — the clinician verifies before they are committed.
+  Confirmed profile values (`provenance = 'confirmed'`) are passed as
+  `confirmedProfileValues` to `applyFormAutofill` and fill the scored widget
+  silently; when all scored-widget fields are covered by confirmed values,
+  `manualRequired` is cleared. The scoring mapping lives in the shared extraction
+  prompts (keyed on "Score 0-3" fields, so only scored instruments are affected),
+  not per-form — keep general anti-fabrication (names/dates/exact numbers) intact.
 - **When a label substring can collide** (e.g. the "Others" checkbox label contains
   the word "Client"), classify the more specific case first and `continue` — don't
   rely on loose `includes()` matches that overlap.

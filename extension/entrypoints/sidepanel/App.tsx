@@ -849,7 +849,14 @@ export default function App() {
                             disabled={confirmingField === field.fieldKey}
                             style={{ flexShrink: 0, minWidth: 44, minHeight: 44, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 4, fontSize: 'var(--text-xs)', fontWeight: 600, color: '#92400e', background: '#fef3c7', border: '1px solid #fcd34d', borderRadius: 'var(--radius-sm)', cursor: 'pointer', padding: '2px var(--space-2)' }}
                           >
-                            {confirmingField === field.fieldKey ? <Spinner size={10} /> : '?'} {confirmingField === field.fieldKey ? '' : 'Confirm'}
+                            {confirmingField === field.fieldKey ? <Spinner size={10} /> : (
+                              <>
+                                <svg aria-hidden="true" width="11" height="11" viewBox="0 0 12 12" fill="none">
+                                  <path d="M2 6.5l2.5 2.5L10 3" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+                                </svg>
+                                Confirm
+                              </>
+                            )}
                           </button>
                         )}
                       </div>
