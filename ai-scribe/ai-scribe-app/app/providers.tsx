@@ -2,7 +2,7 @@
 
 import * as React from "react";
 
-import { useRouter } from "next/navigation";
+import { useRouter, usePathname } from "next/navigation";
 import {
   ThemeProvider as NextThemesProvider,
   ThemeProviderProps,
@@ -22,6 +22,11 @@ export interface ProvidersProps {
 
 export function Providers({ children, themeProps }: ProvidersProps) {
   const router = useRouter();
+  const pathname = usePathname();
+
+  if (pathname.startsWith('/mobile')) {
+    return <NextThemesProvider {...themeProps}>{children}</NextThemesProvider>;
+  }
 
   return (
     <HeroUIProvider navigate={router.push}>

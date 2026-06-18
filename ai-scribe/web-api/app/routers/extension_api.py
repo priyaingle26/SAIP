@@ -139,7 +139,7 @@ async def ext_list_encounters(
         )
         result.append(ExtEncounter(
             id=enc.id,
-            clientName=enc.label or enc.autolabel or "Session",
+            clientName=enc.label or enc.autolabel or "Current Session",
             date=enc.created.isoformat(),
             status=status,
             transcript=transcript,
@@ -176,7 +176,7 @@ async def ext_get_encounter(
     status = "generated" if note else ("transcribed" if transcript else "pending")
     return ExtEncounter(
         id=enc.id,
-        clientName=enc.label or enc.autolabel or "Session",
+        clientName=enc.label or enc.autolabel or "Current Session",
         date=enc.created.isoformat(),
         status=status,
         transcript=transcript,
@@ -659,7 +659,7 @@ async def extension_generate(
         output_type="Markdown"
     )
 
-    footer = f"\n\n*\\<\\<Generated in part by SAIP, with patient consent where applicable.\\>\\>*\n*\\<\\<Note ID: ext-{request.encounter_id}\\>\\>*"
+    footer = f"\n\n*Generated in part by SAIP, with patient consent where applicable.*\n*Note ID: ext-{request.encounter_id}*"
     final_text = output.text + footer
 
     # Persist DraftNote to the encounter if it exists in the DB
@@ -1608,7 +1608,7 @@ async def get_patient_encounters(
         status = "generated" if note else ("transcribed" if transcript else "pending")
         result.append(ExtEncounter(
             id=enc.id,
-            clientName=enc.label or enc.autolabel or "Session",
+            clientName=enc.label or enc.autolabel or "Current Session",
             date=enc.created.isoformat(),
             status=status,
             transcript=transcript,

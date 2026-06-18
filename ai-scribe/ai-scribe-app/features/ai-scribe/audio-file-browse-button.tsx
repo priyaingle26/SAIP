@@ -4,7 +4,19 @@ import { useRef } from "react";
 
 import { Button } from "@heroui/button";
 
-const ACCEPT_FILE_TYPES = ["mp3", "mp4", "mpeg", "m4a", "webm", "wav", "mpga"];
+const ACCEPT_FILE_TYPES = [
+  "audio/*",
+  "video/mp4",
+  "video/mpeg",
+  ".mp3",
+  ".mp4",
+  ".mpeg",
+  ".m4a",
+  ".webm",
+  ".wav",
+  ".mpga",
+  ".ogg",
+];
 
 type AudioFileBrowseButtonProps = {
   onFileSelected: (audioData: File) => void;
@@ -34,7 +46,7 @@ export const AudioFileBrowseButton = ({
       </Button>
       <input
         ref={inputFile}
-        accept={ACCEPT_FILE_TYPES.map((type) => `audio/${type}`).join(", ")}
+        accept={ACCEPT_FILE_TYPES.join(", ")}
         aria-hidden="true"
         aria-label="audio-input-file"
         className="hidden"

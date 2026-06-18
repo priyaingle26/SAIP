@@ -5,7 +5,7 @@ import { useState } from "react";
 import clsx from "clsx";
 
 import NextLink from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, usePathname } from "next/navigation";
 
 import { Divider } from "@heroui/divider";
 import { Link } from "@heroui/link";
@@ -33,9 +33,14 @@ import { ThemeSwitch } from "./theme-switch";
 
 export const Navbar = () => {
   const router = useRouter();
+  const pathname = usePathname();
 
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const feedbackModal = useDisclosure();
+
+  if (pathname.startsWith('/mobile')) {
+    return null;
+  }
 
   return (
     <NextUINavbar

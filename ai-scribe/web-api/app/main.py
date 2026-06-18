@@ -125,7 +125,8 @@ app.add_middleware(
     allow_origins=[
         frontend_url,
         "http://localhost:4000",
-        "http://127.0.0.1:4000"
+        "http://127.0.0.1:4000",
+        "http://192.168.1.11:4000"
     ],
     allow_origin_regex=r"chrome-extension://.*",
     allow_credentials=True,
