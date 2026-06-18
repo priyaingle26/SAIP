@@ -39,9 +39,6 @@ def generate_note(
 
     # Configure prompt messages.
     if output_type == "Markdown":
-        instructions = instructions.replace("*", "$$")
-        instructions = instructions.replace("+", "$$$")
-        instructions = instructions.replace("#", "$$$$")
         messages = [
             {"role": "system", "content": MARKDOWN_NOTE_SYSTEM_PROMPT},
             {"role": "user", "content": f'Instructions:\n"""{instructions}\n"""'},

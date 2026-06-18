@@ -30,3 +30,8 @@ Thumbs.db
 *.p8
 *.pub
 *.pem
+
+# Claude Code internals & local planning docs
+.claude/
+docs/
+openspec/

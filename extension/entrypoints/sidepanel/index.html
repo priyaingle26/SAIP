@@ -4,20 +4,30 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>SAIP AI Scribe</title>
+    <!-- Preconnect for faster font loading -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <!-- Figtree (headings) + Noto Sans (body) -->
     <link
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&family=Noto+Sans:wght@400;500;600&display=swap"
       rel="stylesheet"
     />
     <style>
       *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
       html, body, #root { height: 100%; width: 100%; }
       body {
-        font-family: 'Inter', sans-serif;
-        background: #0a0f1e;
-        color: #e2e8f0;
+        font-family: 'Noto Sans', 'Segoe UI', system-ui, sans-serif;
+        font-size: 14px;
+        line-height: 1.5;
+        background: #f5f4f9;
+        color: #1a1528;
         overflow: hidden;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+      }
+      /* Ensure inputs don't auto-zoom on iOS (min 16px) */
+      input, select, textarea {
+        font-size: 16px;
       }
     </style>
   </head>

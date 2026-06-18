@@ -1,13 +1,30 @@
 
 import { detectCredibleForm, mapNoteToFields, applyAutofill, detectFormType, applyFormAutofill } from '../lib/fieldMapper';
+import { getProfileById } from '../lib/form-profiles';
+import { persistFillLog } from '../lib/fillLog';
 import type { ExtensionMessage, ClinicalNote } from '../lib/schemas';
+
+// The per-encounter id that scopes the evaluation cache, so a bundle is
+// generated once per evaluation instance and reused across its sub-pages.
+// Credible deployments expose this as either `fvid` or `visittemp_id` in the
+// form frame URL — accept whichever is present.
+function getEncounterId(): string | null {
+  try {
+    const params = new URL(window.location.href).searchParams;
+    return params.get('fvid') ?? params.get('visittemp_id');
+  } catch {
+    return null;
+  }
+}
 
 export default defineContentScript({
   matches: [
     'https://*.crediblebh.com/*',
     'https://*.thecrediblesolution.com/*',
+    'https://*.crediblebh.com/webforms/questions.asp*',
     'http://localhost/*',
   ],
+  allFrames: true,
   main() {
     // ── On load: detect legacy Credible SOAP form ────────────────────────────
     if (detectCredibleForm()) {
@@ -49,9 +66,13 @@ export default defineContentScript({
             const result = detectFormType();
             // Also capture the page body text for formContext
             const formContext = (document.body.innerText ?? '').trim().slice(0, 8000);
+            const fvid = getEncounterId();
+            // The bundle TYPE comes from the matched profile (stable across
+            // deployments), not from a deployment-specific fvid->bundle map.
+            const bundle = getProfileById(result.formType)?.bundle;
             sendResponse({
               type: 'FORM_DETECTED',
-              payload: { ...result, formContext },
+              payload: { ...result, formContext, fvid: fvid ?? undefined, bundle },
             });
           } catch (err) {
             sendResponse({ type: 'ERROR', error: String(err) });
@@ -62,12 +83,20 @@ export default defineContentScript({
         // ── Form Assistant autofill ─────────────────────────────────────────
         if (message.type === 'AUTOFILL_FORM_REQUEST') {
           try {
-            const { formType, fields } = message.payload as {
+            const { formType, fields, confirmedProfileValues } = message.payload as {
               formType: string;
               fields: Record<string, string>;
+              confirmedProfileValues?: Record<string, string>;
             };
-            const result = applyFormAutofill(formType, fields);
-            sendResponse({ type: 'AUTOFILL_FORM_COMPLETE', payload: result });
+            const result = applyFormAutofill(formType, fields, confirmedProfileValues);
+            const logEntry = {
+              formType,
+              ...result,
+              frameUrl: window.location.href,
+              ts: Date.now(),
+            };
+            persistFillLog(logEntry).catch(() => {});
+            sendResponse({ type: 'AUTOFILL_FORM_COMPLETE', payload: logEntry });
           } catch (err) {
             sendResponse({ type: 'ERROR', error: String(err) });
           }

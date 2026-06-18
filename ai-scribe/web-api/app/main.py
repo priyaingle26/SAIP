@@ -73,6 +73,11 @@ configure_logging()
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    # Always sync the schema so new models are picked up without manual migration.
+    # create_all is a no-op for tables that already exist.
+    if not settings.USE_AURORA:
+        db.Base.metadata.create_all(db.engine)
+
     if settings.ENVIRONMENT == "development" and not db.is_datafolder_initialized():
         db.initialize_dev_datafolder()
         db.update_builtin_notetypes()

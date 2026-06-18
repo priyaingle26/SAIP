@@ -14,6 +14,7 @@
 
 from app.config import (
     is_openai_supported,
+    is_gemini_supported,
     is_aws_transcribe_supported,
     is_aws_bedrock_supported,
     is_vllm_supported,
@@ -23,6 +24,7 @@ from app.config import (
 )
 from app.services.adapters import GenerativeAIService, TranscriptionService
 from app.services.openai import OpenAIGenerativeAIService, OpenAITranscriptionService
+from app.services.gemini import GeminiGenerativeAIService
 from app.services.prompt_service import prompt_service
 from app.services.whisperx import WhisperXTranscriptionService
 from app.services.amazon_transcribe import AmazonTranscribeService
@@ -103,6 +105,9 @@ match settings.GENERATIVE_AI_SERVICE:
             generative_ai_services.append(
                 LlamaCppGenerativeAIService(api_url=settings.LLAMA_CPP_SERVER_URL)
             )
+    case "Gemini":
+        if is_gemini_supported:
+            generative_ai_services.append(GeminiGenerativeAIService())
     case _:
         raise ValueError(
             f"{settings.GENERATIVE_AI_SERVICE} is not a valid generative AI service"
@@ -110,3 +115,17 @@ match settings.GENERATIVE_AI_SERVICE:
 
 if not any(generative_ai_services):
     raise Exception("No generative AI services have been configured")
+
+# Dedicated provider for structured-output endpoints (Form Assistant's
+# /generate-form-answers and /generate-evaluation). Prefers Gemini's native
+# responseSchema support regardless of GENERATIVE_AI_SERVICE; falls back to
+# whichever provider is otherwise configured when no Gemini key is set
+# (design.md D6).
+form_ai_service: GenerativeAIService = (
+    GeminiGenerativeAIService() if is_gemini_supported else generative_ai_services[0]
+)
+# gemini-flash-latest: an alias Google keeps pointed at a current Flash model,
+# fast/cheap and sufficient for short structured field extraction (design.md
+# Open Questions — revisit if quality issues surface on complex forms). Pinned
+# version ids (e.g. gemini-2.0-flash) get sunset and 404; the alias avoids that.
+form_ai_model: str = "gemini-flash-latest" if is_gemini_supported else settings.DEFAULT_NOTE_GENERATION_MODEL

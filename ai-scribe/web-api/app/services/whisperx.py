@@ -34,7 +34,7 @@ class WhisperXConfig(BaseModel):
     device_index: int = 0
     batch_size: int = 16
     compute_type: str = "float32"
-    model_version: str = "large-v3"
+    model_version: str = "tiny"
 
     def validate_device(self) -> bool:
         """Validate device availability and compatibility."""

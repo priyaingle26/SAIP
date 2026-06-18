@@ -6,8 +6,21 @@ import type {
   GenerateResponse,
   FormAnswersRequest,
   FormAnswersResponse,
+  EvaluationAnswersRequest,
+  EvaluationAnswersResponse,
   ApiResponse,
+  FillLogEntry,
+  TranscriptTurn,
+  Patient,
+  PatientProfile,
+  ProfileField,
 } from './schemas';
+
+export interface FinalizeStreamResponse {
+  encounterId: string;
+  transcript: string;
+  turns: TranscriptTurn[];
+}
 
 async function authHeaders(): Promise<HeadersInit> {
   const token = await getAuthToken();
@@ -20,13 +33,15 @@ async function authHeaders(): Promise<HeadersInit> {
 // ─── Upload audio blob and trigger transcription ─────────────────────────────
 export async function transcribeAudio(
   audioBlob: Blob,
-  encounterId?: string
+  encounterId?: string,
+  patientId?: string,
 ): Promise<ApiResponse<TranscribeResponse>> {
   try {
     const token = await getAuthToken();
     const form = new FormData();
     form.append('audio', audioBlob, 'recording.webm');
     if (encounterId) form.append('encounter_id', encounterId);
+    if (patientId) form.append('patient_id', patientId);
 
     const res = await fetch(SAIP_ENDPOINTS.transcribe, {
       method: 'POST',
@@ -45,14 +60,15 @@ export async function transcribeAudio(
 // ─── Generate clinical note from transcript ───────────────────────────────────
 export async function generateNote(
   encounterId: string,
-  transcript: string
+  transcript: string,
+  patientId?: string,
 ): Promise<ApiResponse<GenerateResponse>> {
   try {
     const headers = await authHeaders();
     const res = await fetch(SAIP_ENDPOINTS.generate, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ encounter_id: encounterId, transcript }),
+      body: JSON.stringify({ encounter_id: encounterId, transcript, patient_id: patientId }),
     });
     if (!res.ok) throw new Error(await res.text());
     const data = await res.json();
@@ -62,7 +78,7 @@ export async function generateNote(
   }
 }
 
-// ─── Fetch encounter list ─────────────────────────────────────────────────────
+// ─── Fetch encounter list (extension-format) ──────────────────────────────────
 export async function fetchEncounters(): Promise<ApiResponse<Encounter[]>> {
   try {
     const headers = await authHeaders();
@@ -104,6 +120,208 @@ export async function generateFormAnswers(
     if (!res.ok) throw new Error(await res.text());
     const data = await res.json();
     return { success: true, data };
+  } catch (err) {
+    return { success: false, error: String(err) };
+  }
+}
+
+// ─── Fetch persisted form answers for an encounter + form type ────────────────
+export async function fetchFormAnswers(
+  encounterId: string,
+  formType: string
+): Promise<ApiResponse<Record<string, string>>> {
+  try {
+    const headers = await authHeaders();
+    const res = await fetch(SAIP_ENDPOINTS.formAnswers(encounterId, formType), { headers });
+    if (!res.ok) {
+      if (res.status === 404) return { success: false, error: 'not_found' };
+      throw new Error(await res.text());
+    }
+    const data = await res.json();
+    return { success: true, data };
+  } catch (err) {
+    return { success: false, error: String(err) };
+  }
+}
+
+// ─── Generate evaluation-bundle answers (one call covers every sub-page) ─────
+export async function generateEvaluation(
+  req: EvaluationAnswersRequest
+): Promise<ApiResponse<EvaluationAnswersResponse>> {
+  try {
+    const headers = await authHeaders();
+    const res = await fetch(SAIP_ENDPOINTS.generateEvaluation, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(req),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    return { success: true, data };
+  } catch (err) {
+    return { success: false, error: String(err) };
+  }
+}
+
+// ─── Fetch cached evaluation bundle from backend ──────────────────────────────
+export async function fetchEvalCache(
+  encounterId: string,
+  bundleId: string
+): Promise<ApiResponse<Record<string, string>>> {
+  try {
+    const headers = await authHeaders();
+    const res = await fetch(SAIP_ENDPOINTS.evalCache(encounterId, bundleId), { headers });
+    if (!res.ok) {
+      if (res.status === 404) return { success: false, error: 'not_found' };
+      throw new Error(await res.text());
+    }
+    const data = await res.json();
+    return { success: true, data };
+  } catch (err) {
+    return { success: false, error: String(err) };
+  }
+}
+
+// ─── Check whether the backend has Realtime streaming configured ─────────────
+export async function checkStreamingStatus(): Promise<boolean> {
+  try {
+    const headers = await authHeaders();
+    const res = await fetch(SAIP_ENDPOINTS.streamingStatus, { headers });
+    if (!res.ok) return false;
+    const data = await res.json();
+    return data?.available === true;
+  } catch {
+    return false;
+  }
+}
+
+// ─── Finalize a streaming session: upload webm blob + pre-streamed transcript ─
+export async function finalizeStream(
+  audioBlob: Blob,
+  transcript: string,
+  encounterId?: string,
+  patientId?: string,
+): Promise<ApiResponse<FinalizeStreamResponse>> {
+  try {
+    const token = await getAuthToken();
+    const form = new FormData();
+    form.append('audio', audioBlob, 'recording.webm');
+    form.append('transcript', transcript);
+    if (encounterId) form.append('encounter_id', encounterId);
+    if (patientId) form.append('patient_id', patientId);
+
+    const res = await fetch(SAIP_ENDPOINTS.transcribeFinalize, {
+      method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      body: form,
+    });
+
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    return { success: true, data };
+  } catch (err) {
+    return { success: false, error: String(err) };
+  }
+}
+
+// ─── Patient management ───────────────────────────────────────────────────────
+
+export async function searchPatients(q: string): Promise<ApiResponse<Patient[]>> {
+  try {
+    const headers = await authHeaders();
+    const res = await fetch(SAIP_ENDPOINTS.patientsSearch(q), { headers });
+    if (!res.ok) throw new Error(await res.text());
+    return { success: true, data: await res.json() };
+  } catch (err) {
+    return { success: false, error: String(err) };
+  }
+}
+
+export async function createPatient(
+  name: string,
+  dob?: string,
+  credibleClientId?: string,
+): Promise<ApiResponse<Patient>> {
+  try {
+    const headers = await authHeaders();
+    const res = await fetch(SAIP_ENDPOINTS.patients, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ name, dob, credibleClientId }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return { success: true, data: await res.json() };
+  } catch (err) {
+    return { success: false, error: String(err) };
+  }
+}
+
+export async function getPatient(patientId: string): Promise<ApiResponse<Patient>> {
+  try {
+    const headers = await authHeaders();
+    const res = await fetch(SAIP_ENDPOINTS.patient(patientId), { headers });
+    if (!res.ok) throw new Error(await res.text());
+    return { success: true, data: await res.json() };
+  } catch (err) {
+    return { success: false, error: String(err) };
+  }
+}
+
+export async function fetchPatientProfile(patientId: string): Promise<ApiResponse<PatientProfile>> {
+  try {
+    const headers = await authHeaders();
+    const res = await fetch(SAIP_ENDPOINTS.patientProfile(patientId), { headers });
+    if (!res.ok) throw new Error(await res.text());
+    return { success: true, data: await res.json() };
+  } catch (err) {
+    return { success: false, error: String(err) };
+  }
+}
+
+export async function confirmProfileField(
+  patientId: string,
+  fieldKey: string,
+): Promise<ApiResponse<ProfileField>> {
+  try {
+    const headers = await authHeaders();
+    const res = await fetch(SAIP_ENDPOINTS.confirmProfileField(patientId, fieldKey), {
+      method: 'POST',
+      headers,
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return { success: true, data: await res.json() };
+  } catch (err) {
+    return { success: false, error: String(err) };
+  }
+}
+
+// ─── Post an autofill audit entry ────────────────────────────────────────────
+export async function postAutofillAudit(
+  encounterId: string | undefined,
+  entry: FillLogEntry
+): Promise<ApiResponse<void>> {
+  try {
+    const headers = await authHeaders();
+    const res = await fetch(SAIP_ENDPOINTS.autofillAudit, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        encounterId,
+        formType: entry.formType,
+        frameUrl: entry.frameUrl,
+        confidence: entry.confidence ?? 1.0,
+        filled: entry.filled,
+        missed: entry.missed.length,
+        manualRequired: entry.manualRequired.length,
+        detail: {
+          filledLabels: entry.filled > 0 ? entry.labelsSeen.slice(0, entry.filled) : [],
+          missed: entry.missed,
+          manual: entry.manualRequired,
+        },
+      }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return { success: true };
   } catch (err) {
     return { success: false, error: String(err) };
   }

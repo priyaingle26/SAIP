@@ -6,21 +6,28 @@ interface Props {
 
 export default function TranscriptView({ transcript }: Props) {
   return (
-    <div style={styles.wrap}>
-      <p style={styles.text}>{transcript || 'Awaiting transcript…'}</p>
+    <div
+      style={{
+        background: 'var(--color-surface)',
+        border: '1px solid var(--color-border)',
+        borderRadius: 'var(--radius-md)',
+        padding: 'var(--space-3)',
+        maxHeight: 200,
+        overflowY: 'auto',
+        boxShadow: 'var(--shadow-sm)',
+      }}
+    >
+      <p
+        style={{
+          fontSize: 'var(--text-sm)',
+          lineHeight: 'var(--leading-relaxed)',
+          color: transcript ? 'var(--color-muted)' : 'var(--color-muted-2)',
+          whiteSpace: 'pre-wrap',
+          wordBreak: 'break-word',
+        }}
+      >
+        {transcript || 'Awaiting transcript…'}
+      </p>
     </div>
   );
 }
-
-const styles: Record<string, React.CSSProperties> = {
-  wrap: {
-    background: 'rgba(255,255,255,0.03)',
-    border: '1px solid rgba(99,179,237,0.15)',
-    borderRadius: 10, padding: '12px 14px',
-    maxHeight: 200, overflowY: 'auto',
-  },
-  text: {
-    fontSize: 13, lineHeight: 1.7, color: '#a0aec0',
-    whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-  },
-};
