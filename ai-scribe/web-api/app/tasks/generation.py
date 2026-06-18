@@ -56,7 +56,24 @@ def generate_note(
 
     # Return the draft note segments.
     try:
-        return service.complete(model, messages)
+        import re
+        result = service.complete(model, messages)
+        # Clean up common AI generation artifacts
+        text = result.text
+        
+        # Clean up exact substrings often generated as artifacts
+        for artifact in ["*\\<\\>*", "\\<\\>", "<\\>", "*<||>*", "<||>", "*\\<\\>*", "\\<\\>", "*<\\\\>*", "<\\\\>", "*<<", ">>*"]:
+            text = text.replace(artifact, "")
+            
+        # Clean up any residual backslashed or raw angle-brackets patterns anywhere
+        text = re.sub(r"\s*\*?\\?[<\[\(]\s*\\?[\\|/]*\s*\\?[>\]\)]\*?\s*", " ", text)
+        
+        # Strip any self-generated footer or Note ID lines at the end of the text
+        text = re.sub(r"(?i)\bGenerated in part by SAIP[\s\S]*$", "", text)
+        text = re.sub(r"(?i)\bNote ID:\s*\S+[\s\S]*$", "", text)
+        
+        result.text = text.strip()
+        return result
     except errors.ExternalServiceError as e:
         raise e
 

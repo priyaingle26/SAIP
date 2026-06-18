@@ -41,16 +41,13 @@ export function useNoteGenerator() {
         let noteFooter = [
           "Generated in part by SAIP, with patient consent where applicable.",
           `Note ID: ${encounter.id}-${draftNote.id}`,
-        ]
-          .map((line) => `<<${line}>>`)
-          .join("\n");
+        ];
 
         if (noteType.outputType === "Markdown") {
-          // For the footer, escape < and >, and set to italic.
-          draftNote.content += `\n\n${noteFooter.replace(/^<<(.*)>>$/gm, "*\\<\\<$1\\>\\>*")}`;
+          draftNote.content += `\n\n*${noteFooter.join("*\n*")}*`;
         } else {
           // Plaintext footer.
-          draftNote.content += `\n\n<<${noteFooter}>>`;
+          draftNote.content += `\n\n${noteFooter.join("\n")}`;
         }
       }
 

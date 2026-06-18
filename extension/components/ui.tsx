@@ -440,7 +440,7 @@ export function TabBar({ tabs, active, onChange }: TabBarProps) {
         display: 'flex',
         borderBottom: '1px solid var(--color-border)',
         background: 'var(--color-surface)',
-        padding: '0 var(--space-3)',
+        padding: '4px var(--space-3)',
       }}
     >
       {tabs.map((tab) => {
@@ -460,19 +460,19 @@ export function TabBar({ tabs, active, onChange }: TabBarProps) {
               alignItems: 'center',
               justifyContent: 'center',
               gap: 'var(--space-1)',
-              padding: '10px var(--space-2)',
-              border: 'none',
-              borderBottom: isActive ? '2px solid var(--color-primary)' : '2px solid transparent',
-              marginBottom: '-1px',
+              padding: '8px var(--space-2)',
+              margin: '2px 4px',
+              border: isActive ? '1px solid var(--color-primary)' : '1px solid transparent',
+              borderRadius: 'var(--radius-sm)',
               background: 'transparent',
               color: isActive ? 'var(--color-primary)' : 'var(--color-muted)',
               fontSize: 'var(--text-sm)',
               fontWeight: isActive ? 600 : 500,
               cursor: 'pointer',
-              transition: 'color var(--motion-fast), border-color var(--motion-fast)',
+              transition: 'all var(--motion-fast)',
               outline: 'none',
               whiteSpace: 'nowrap',
-              minHeight: 44,
+              minHeight: 36,
             }}
             onFocus={(e) => {
               (e.target as HTMLElement).style.outline = '2px solid var(--color-ring)';

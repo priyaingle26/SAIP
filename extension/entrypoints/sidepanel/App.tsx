@@ -9,7 +9,7 @@ import TranscriptView from '../../components/TranscriptView';
 import GeneratedNoteView from '../../components/GeneratedNoteView';
 import EncounterHistory from '../../components/EncounterHistory';
 import FormAssistant from '../../components/FormAssistant';
-import { searchPatients, createPatient, fetchPatientProfile, confirmProfileField, getPatient } from '../../lib/apiClient';
+import { searchPatients, createPatient, fetchPatientProfile, confirmProfileField, getPatient, fetchEncounters } from '../../lib/apiClient';
 import {
   TabBar, Button, Banner, Spinner, Divider,
   LogOutIcon, FileTextIcon, HistoryIcon, MicIcon, AlertIcon, UploadIcon,
@@ -256,7 +256,22 @@ export default function App() {
 
   async function loadEncounters() {
     const result = await chrome.storage.local.get('saip_encounters');
-    setEncounters((result['saip_encounters'] ?? []) as Encounter[]);
+    const localList = (result['saip_encounters'] ?? []) as Encounter[];
+    setEncounters(localList);
+
+    // Merge backend encounters with local cache
+    const apiResult = await fetchEncounters();
+    if (apiResult.success && apiResult.data) {
+      const backendList = apiResult.data as Encounter[];
+      const backendById = new Map(backendList.map((e) => [e.id, e]));
+      const localOnly = localList.filter((e) => !backendById.has(e.id));
+      const merged = [...backendList, ...localOnly].sort(
+        (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+      );
+      
+      setEncounters(merged);
+      await chrome.storage.local.set({ saip_encounters: merged });
+    }
   }
 
   // ─── Auth ─────────────────────────────────────────────────────────────────
@@ -267,6 +282,7 @@ export default function App() {
     try {
       const u = await login(email, password);
       setUser(u);
+      await loadEncounters();
     } catch {
       setLoginError('Invalid credentials. Please try again.');
     } finally {
