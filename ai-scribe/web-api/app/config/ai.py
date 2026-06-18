@@ -116,16 +116,10 @@ match settings.GENERATIVE_AI_SERVICE:
 if not any(generative_ai_services):
     raise Exception("No generative AI services have been configured")
 
-# Dedicated provider for structured-output endpoints (Form Assistant's
-# /generate-form-answers and /generate-evaluation). Prefers Gemini's native
-# responseSchema support regardless of GENERATIVE_AI_SERVICE; falls back to
-# whichever provider is otherwise configured when no Gemini key is set
-# (design.md D6).
-form_ai_service: GenerativeAIService = (
-    GeminiGenerativeAIService() if is_gemini_supported else generative_ai_services[0]
-)
-# gemini-flash-latest: an alias Google keeps pointed at a current Flash model,
-# fast/cheap and sufficient for short structured field extraction (design.md
-# Open Questions — revisit if quality issues surface on complex forms). Pinned
-# version ids (e.g. gemini-2.0-flash) get sunset and 404; the alias avoids that.
-form_ai_model: str = "gemini-flash-latest" if is_gemini_supported else settings.DEFAULT_NOTE_GENERATION_MODEL
+# Provider for structured-output endpoints (Form Assistant's
+# /generate-form-answers and /generate-evaluation). Follows the configured
+# GENERATIVE_AI_SERVICE so the whole app uses one provider. Both the OpenAI and
+# Gemini services implement complete_structured() (strict json_schema /
+# responseSchema); other providers fall back to JSON-in-prompt.
+form_ai_service: GenerativeAIService = generative_ai_services[0]
+form_ai_model: str = settings.DEFAULT_NOTE_GENERATION_MODEL

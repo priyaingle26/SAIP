@@ -894,12 +894,16 @@ def _generate_structured_fields(schema: dict, subject_label: str, subject_value:
     }
 
     system_prompt = (
-        "You are an expert behavioral health clinical documentation assistant.\n"
-        "Your task is to generate structured answers for a Credible EHR form.\n"
-        "Use the transcript as the primary source of truth.\n"
-        "Use the clinical note as a clinician-reviewed summary.\n"
-        "Use the form context (raw page text) to understand the exact field labels on the form.\n"
-        "Never invent information. If information is missing, return an empty string.\n"
+        "You are a clinical documentation assistant filling a Credible EHR form from a visit.\n"
+        "Use the transcript as the primary source of truth and the clinical note as a "
+        "clinician-reviewed summary. Use the form context (raw page text) to understand the "
+        "exact field labels.\n"
+        "Fill EVERY field you can reasonably support from the visit. Narrative fields (such as "
+        "a visit summary) should ALWAYS be written from the transcript/note whenever a visit "
+        "occurred — do not leave them blank just because the visit type differs from the form's "
+        "usual use.\n"
+        "Only leave a field as an empty string when the visit genuinely contains nothing relevant "
+        "to it. Do not fabricate specific facts (names, dates, scores) that were not stated.\n"
         "For fields with a controlled list of options, return ONLY option text exactly as given, "
         "comma-separated if multiple apply.\n"
         "Return ONLY valid JSON. Return EVERY field defined in the schema.\n"
@@ -1306,11 +1310,20 @@ def _update_patient_profile(
         {"role": "user", "content": user_prompt},
     ]
 
-    # Use the model that matches the configured generative service. The default
-    # SPEAKER_LABELING_MODEL ("gpt-4o-mini") only exists on OpenAI; with a Gemini
-    # service that name 404s and the profile silently stays empty.
+    # Strict structured output: every profile key is a string, empty if unknown.
+    # complete_structured uses the provider's native schema enforcement (OpenAI
+    # json_schema / Gemini responseSchema) so the result is always valid JSON.
+    # Use DEFAULT_NOTE_GENERATION_MODEL so the model matches the configured
+    # service (a hardcoded OpenAI name like "gpt-4o-mini" 404s on Gemini).
+    response_schema = {
+        "type": "object",
+        "properties": {key: {"type": "string"} for key in PROFILE_FIELD_SCHEMA},
+        "required": list(PROFILE_FIELD_SCHEMA.keys()),
+    }
     service = generative_ai_services[0]
-    output = service.complete(settings.DEFAULT_NOTE_GENERATION_MODEL, messages)
+    output = service.complete_structured(
+        settings.DEFAULT_NOTE_GENERATION_MODEL, messages, response_schema
+    )
     raw = output.text.strip()
     if raw.startswith("```"):
         raw = raw.split("```")[1]

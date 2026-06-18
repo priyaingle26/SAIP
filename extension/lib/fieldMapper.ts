@@ -336,10 +336,17 @@ function selectRadio(groupKeywords: string[], targetValue: string): boolean {
   const anchor = findTextAnchor(groupKeywords);
   const candidates = groupAfterAnchor(allRadios, anchor);
 
-  const match =
+  let match =
     candidates.find((r) => getAdjacentText(r).toLowerCase().trim() === valueLower) ??
     candidates.find((r) => getAdjacentText(r).toLowerCase().includes(valueLower)) ??
     candidates.find((r) => r.value.toLowerCase() === valueLower);
+
+  // Numeric fallback: a value like "3" on an N-option radio (e.g. PHQ-9 Q10
+  // difficulty) selects the Nth option in order (0-based) when no text matched.
+  if (!match && /^\d+$/.test(valueLower)) {
+    const idx = parseInt(valueLower, 10);
+    if (idx >= 0 && idx < candidates.length) match = candidates[idx];
+  }
 
   if (!match) return false;
   match.checked = true;
@@ -355,14 +362,20 @@ function selectRadio(groupKeywords: string[], targetValue: string): boolean {
 // the field label, then click the button whose value equals the score. Clicking
 // runs Credible's own inline onclick (selection highlight + score auto-compute),
 // so we click exactly once (a second click would toggle it back off).
-function fillScoredWidget(labels: string[], value: string): boolean {
+// Locate (but do NOT click) the scored-widget button for one question row.
+// Credible PHQ-style widgets render 4 push-buttons per row that share the same
+// id/name (e.g. x_516210) with values "0".."3"; selection is a color toggle
+// driven by an inline jQuery onclick. We match the row by its question text and
+// return the button whose value equals the wanted score. Clicking is deferred to
+// fireScoredClicksSequentially() — see below.
+function findScoredButton(labels: string[], value: string): HTMLInputElement | null {
   const wanted = value.trim();
-  if (!/^\d+$/.test(wanted)) return false; // scored widgets expect a numeric value
+  if (!/^\d+$/.test(wanted)) return null; // scored widgets expect a numeric value
 
   const buttons = Array.from(
     document.querySelectorAll<HTMLInputElement>('input[type="button"][id^="x_"]')
   );
-  if (!buttons.length) return false;
+  if (!buttons.length) return null;
 
   const groups = new Map<string, HTMLInputElement[]>();
   for (const b of buttons) {
@@ -377,13 +390,56 @@ function fillScoredWidget(labels: string[], value: string): boolean {
     const row = groupButtons[0].closest('tr');
     const rowText = (row?.innerText ?? row?.textContent ?? '').toUpperCase();
     if (!upperLabels.some((l) => rowText.includes(l))) continue;
-
-    const target = groupButtons.find((b) => b.value.trim() === wanted);
-    if (!target) return false;
-    target.click(); // triggers the page's inline onclick (selection + scoring)
-    return true;
+    return groupButtons.find((b) => b.value.trim() === wanted) ?? null;
   }
-  return false;
+  return null;
+}
+
+// Is this scored button already the selected one in its row? Selection is shown
+// by a distinct background color, so the selected button's color differs from its
+// (identical-colored) row siblings. Deployment-agnostic: we don't assume a
+// specific color — we find the majority (unselected) color among the row's
+// buttons and treat any button differing from it as selected.
+function isScoredButtonSelected(btn: HTMLInputElement): boolean {
+  const colorOf = (b: HTMLInputElement) => getComputedStyle(b).backgroundColor;
+  let group: HTMLInputElement[] = [];
+  if (btn.name) {
+    group = Array.from(
+      document.querySelectorAll<HTMLInputElement>(
+        `input[type="button"][name="${CSS.escape(btn.name)}"]`,
+      ),
+    );
+  }
+  if (group.length < 2) return false; // can't compare — assume not selected
+
+  const counts = new Map<string, number>();
+  for (const b of group) counts.set(colorOf(b), (counts.get(colorOf(b)) ?? 0) + 1);
+  let unselected = '';
+  let max = -1;
+  for (const [color, n] of counts) if (n > max) { max = n; unselected = color; }
+
+  return colorOf(btn) !== unselected;
+}
+
+// Click scored buttons ONE AT A TIME with a gap. Each button's inline onclick
+// runs an animated jQuery color toggle + a heavy Calcfields() recalculation;
+// firing many in the same synchronous burst makes the page read stale colors and
+// mis-toggle (fills one row but corrupts the rest). Staggering lets each row's
+// handler settle before the next click. We also SKIP buttons already selected,
+// because the onclick toggles — re-clicking a selected value would deselect it
+// (e.g. on a second "fill" pass over already-filled rows). Fire-and-forget: the
+// autofill counts are already known synchronously from findScoredButton().
+async function fireScoredClicksSequentially(targets: HTMLInputElement[]): Promise<void> {
+  for (const btn of targets) {
+    try {
+      if (isScoredButtonSelected(btn)) continue; // already set — clicking would toggle it OFF
+      btn.focus();
+      btn.click(); // triggers the page's inline onclick (selection + scoring)
+    } catch {
+      /* element detached — skip */
+    }
+    await new Promise((r) => setTimeout(r, 250));
+  }
 }
 
 // ─── Tick participant checkboxes (Client/Individual + Others) ────────────────
@@ -623,7 +679,7 @@ export function applyFormAutofill(
 
   let filled = 0;
   const missed: string[] = [];
-  const confirmedFilledKeys = new Set<string>(); // scored-widget keys filled from confirmed profile values
+  const scoredClicks: HTMLInputElement[] = [];   // scored buttons to click sequentially after the loop
 
   // mse-group fields are matched as a batch (grouping is computed once).
   const mseFields = profile.fields.filter((f) => f.type === 'mse-group');
@@ -661,14 +717,14 @@ export function applyFormAutofill(
       case 'radio':
         ok = selectRadio(field.labels, value);
         break;
-      case 'scored-widget':
-        ok = fillScoredWidget(field.labels, value);
-        if (ok && confirmedProfileValues?.[field.key]?.trim()) {
-          // This scored widget was filled from a confirmed patient profile value —
-          // it should not appear in manualRequired (no "needs manual entry" note).
-          confirmedFilledKeys.add(field.key);
-        }
+      case 'scored-widget': {
+        // Resolve the target button now (so filled/missed counts are accurate),
+        // but defer the actual click to a staggered pass after the loop.
+        const btn = findScoredButton(field.labels, value);
+        ok = !!btn;
+        if (btn) scoredClicks.push(btn);
         break;
+      }
       case 'checkbox-group':
         if (field.key === 'participants') {
           ok = applyParticipantCheckboxes(value) > 0;
@@ -682,20 +738,18 @@ export function applyFormAutofill(
     else missed.push(field.key);
   }
 
-  // Detect scored widgets that still need manual entry.
-  // Exclude widgets whose group was successfully filled from a confirmed profile value.
-  const allScoredWidgets = detectScoredWidgets();
-  const manualRequired = confirmedFilledKeys.size > 0
-    ? allScoredWidgets.filter((widgetId) => {
-        // Keep in manualRequired only if none of the confirmedFilledKeys correspond
-        // to a field that already ran fillScoredWidget successfully.  Since widgetId
-        // is a DOM element ID we can't map 1-to-1, so we conservatively remove the
-        // entire manualRequired list when ALL scored-widget fields were confirmed-filled.
-        const scoredFields = profile.fields.filter((f) => f.type === 'scored-widget');
-        const allConfirmed = scoredFields.every((f) => confirmedFilledKeys.has(f.key));
-        return !allConfirmed;
-      })
-    : allScoredWidgets;
+  // Fire the scored-widget clicks sequentially (fire-and-forget). Counts above
+  // are already final; the page updates over the next ~250ms × N.
+  if (scoredClicks.length) {
+    void fireScoredClicksSequentially(scoredClicks);
+  }
+
+  // A scored widget needs manual entry only if we did NOT fill it. Each clicked
+  // button's id/name is its widget group id (e.g. x_516210), so widgets we filled
+  // are excluded from manualRequired — preventing the bogus "N scored items need
+  // manual entry" banner when they were in fact auto-filled.
+  const filledWidgetIds = new Set(scoredClicks.map((b) => b.id || b.name));
+  const manualRequired = detectScoredWidgets().filter((id) => !filledWidgetIds.has(id));
 
   const labelsSeen = Array.from(textareaLabelMap.keys());
 

@@ -12,6 +12,15 @@ export default defineBackground(() => {
     }
   });
 
+  // ── Re-inject content scripts into already-open tabs on install/update ───────
+  // Chrome does NOT re-inject content scripts into existing tabs when the
+  // extension is reloaded/updated — the old content script becomes orphaned and
+  // messaging fails ("Content script unavailable"). Re-injecting here makes the
+  // extension work in tabs that were open before the reload, without a page refresh.
+  chrome.runtime.onInstalled.addListener(() => {
+    void reinjectContentScripts();
+  });
+
   // ── saip-audio port: receives the final webm blob from offscreen ────────────
   // Used both for batch transcription AND (with streamingTranscript set) finalize
   chrome.runtime.onConnect.addListener((port) => {
@@ -57,6 +66,33 @@ export default defineBackground(() => {
 
   syncEncounters();
 });
+
+// ─── Re-inject content scripts into matching open tabs ───────────────────────
+
+async function reinjectContentScripts() {
+  try {
+    const manifest = chrome.runtime.getManifest();
+    const contentScripts = manifest.content_scripts ?? [];
+    for (const cs of contentScripts) {
+      if (!cs.js || !cs.matches) continue;
+      const tabs = await chrome.tabs.query({ url: cs.matches });
+      for (const tab of tabs) {
+        // Only http(s) tabs are injectable; skip chrome://, about:, etc.
+        if (!tab.id || !/^https?:/.test(tab.url ?? '')) continue;
+        try {
+          await chrome.scripting.executeScript({
+            target: { tabId: tab.id, allFrames: cs.all_frames ?? false },
+            files: cs.js,
+          });
+        } catch {
+          // Tab may be discarded or disallow injection — ignore and continue.
+        }
+      }
+    }
+  } catch {
+    // Manifest/scripting unavailable — non-fatal.
+  }
+}
 
 // ─── Streaming session state ─────────────────────────────────────────────────
 
