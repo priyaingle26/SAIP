@@ -56,11 +56,22 @@ class Settings(BaseSettings):
     TRANSCRIPTION_SERVICE: Literal["OpenAI Whisper", "WhisperX", "AWS Transcribe", "Parakeet MLX"] = (
         "OpenAI Whisper"
     )
-    REALTIME_TRANSCRIPTION_MODEL: str = "gpt-realtime-whisper"
-    # Latency/quality tradeoff for live partial transcripts (gpt-realtime-whisper).
+    # gpt-4o-transcribe supports SERVER VAD: it segments audio on natural silence
+    # (no mid-word chopping → far better accuracy) and auto commit+clears the buffer
+    # each turn (so the buffer never accumulates → no token explosion / 1006 drops).
+    # gpt-realtime-whisper does NOT support server VAD and needs the manual-commit
+    # path below; it is kept as an alternative but is lower accuracy for this use.
+    REALTIME_TRANSCRIPTION_MODEL: str = "gpt-4o-transcribe"
+    # Latency/quality tradeoff for live partial transcripts (gpt-realtime-whisper only).
     # Lower = earlier partial text, higher = more context before emitting.
     # Allowed: minimal | low | medium | high | xhigh
     REALTIME_TRANSCRIPTION_DELAY: str = "low"
+    # Server-VAD silence window (ms) for gpt-4o-transcribe. gpt-4o-transcribe emits
+    # a turn's transcript only when VAD detects this much silence, so a shorter
+    # window = text appears after shorter pauses (more responsive) at the cost of
+    # splitting turns on natural mid-sentence micro-pauses. 300 ms balances both;
+    # raise toward 500 for cleaner segments, lower toward 200 for snappier updates.
+    REALTIME_VAD_SILENCE_MS: int = 300
     SPEAKER_LABELING_MODEL: str = "gpt-4o-mini"
     GENERATIVE_AI_SERVICE: Literal["Ollama", "OpenAI", "AWS Bedrock", "VLLM", "LM Studio", "LlamaCpp", "Gemini"] = "Ollama"
     LOCAL_WHISPER_SERVICE_URL: str | None = None

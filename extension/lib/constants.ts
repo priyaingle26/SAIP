@@ -57,6 +57,9 @@ export const STORAGE_KEYS = {
   encounters: 'saip_encounters',
   evaluationCachePrefix: 'saip_eval_cache_',
   lastFillLog: 'saip_last_fill_log',
+  // Persisted so the selected patient survives MV3 service-worker restarts
+  // (an in-memory variable in background.ts would be lost when Chrome recycles it).
+  selectedPatientId: 'saip_selected_patient_id',
 } as const;
 
 // One evaluation bundle (Psych Eval, E&M EPT) generates once per `fvid` and

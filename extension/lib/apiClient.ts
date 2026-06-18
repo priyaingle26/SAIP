@@ -256,6 +256,17 @@ export async function createPatient(
   }
 }
 
+export async function getPatient(patientId: string): Promise<ApiResponse<Patient>> {
+  try {
+    const headers = await authHeaders();
+    const res = await fetch(SAIP_ENDPOINTS.patient(patientId), { headers });
+    if (!res.ok) throw new Error(await res.text());
+    return { success: true, data: await res.json() };
+  } catch (err) {
+    return { success: false, error: String(err) };
+  }
+}
+
 export async function fetchPatientProfile(patientId: string): Promise<ApiResponse<PatientProfile>> {
   try {
     const headers = await authHeaders();

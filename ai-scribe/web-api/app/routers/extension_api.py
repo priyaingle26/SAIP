@@ -274,19 +274,24 @@ async def extension_transcribe(
 # LIVE TRANSCRIPTION — WebSocket Proxy (tasks 2.1–2.4)
 # =============================================================================
 
-async def _relay_session(client_ws: WebSocket, openai_ws) -> None:
+async def _relay_session(client_ws: WebSocket, openai_ws, manual_commit: bool = False) -> None:
     """Bidirectional relay: extension PCM frames → OpenAI, OpenAI events → extension.
 
-    `gpt-realtime-whisper` has no server VAD — it transcribes a *committed* audio
-    buffer as a whole and emits a single `...transcription.completed` per commit.
-    To produce LIVE captions we therefore commit the buffer on a fixed cadence
-    (`COMMIT_INTERVAL_S`) so a fresh `completed` segment arrives every few seconds
-    while the clinician is still speaking, instead of one block at the very end.
+    Two modes:
+
+    * Server VAD (gpt-4o-transcribe, ``manual_commit=False``) — OpenAI detects
+      speech boundaries from natural silence and auto commit+clears the buffer per
+      turn. We just relay audio; no timer, no manual commit. This avoids mid-word
+      chopping (better accuracy) and buffer accumulation (no token explosion /
+      1006 drops).
+    * Manual commit (gpt-realtime-whisper, ``manual_commit=True``) — no server VAD,
+      so we commit on a fixed cadence to flush segments AND explicitly clear the
+      buffer after every commit so audio never accumulates across the session.
     """
     # 16-bit mono PCM @ 24 kHz → 48000 bytes/sec. OpenAI rejects commits with
     # < 100 ms (4800 bytes) of audio, so only commit once enough has accumulated.
     MIN_COMMIT_BYTES = 4800        # 100 ms — OpenAI's minimum buffer size
-    COMMIT_INTERVAL_S = 2.5        # cadence of live caption segments
+    COMMIT_INTERVAL_S = 2.5        # cadence of live caption segments (manual mode)
 
     stop_event = asyncio.Event()
     pending = {"bytes": 0}         # bytes appended since the last commit
@@ -296,6 +301,10 @@ async def _relay_session(client_ws: WebSocket, openai_ws) -> None:
             pending["bytes"] = 0
             try:
                 await openai_ws.send(json.dumps({"type": "input_audio_buffer.commit"}))
+                # Clear so the next segment starts fresh — committing alone can leave
+                # the buffer accumulating in transcription sessions, which is the
+                # documented cause of token blow-up and abrupt 1006 disconnects.
+                await openai_ws.send(json.dumps({"type": "input_audio_buffer.clear"}))
                 return True
             except Exception:
                 return False
@@ -324,7 +333,8 @@ async def _relay_session(client_ws: WebSocket, openai_ws) -> None:
         stop_event.set()
 
     async def periodic_commit() -> None:
-        # Commit every COMMIT_INTERVAL_S so whisper transcribes incrementally.
+        # Manual mode only: commit every COMMIT_INTERVAL_S so whisper transcribes
+        # incrementally. Server-VAD mode never runs this.
         try:
             while not stop_event.is_set():
                 try:
@@ -364,18 +374,25 @@ async def _relay_session(client_ws: WebSocket, openai_ws) -> None:
 
     t1 = asyncio.create_task(client_to_openai())
     t2 = asyncio.create_task(openai_to_client())
-    t3 = asyncio.create_task(periodic_commit())
+    # Timer only needed when there is no server VAD to segment audio for us.
+    t3 = asyncio.create_task(periodic_commit()) if manual_commit else None
 
     await t1  # Wait for client to stop sending audio
-    t3.cancel()
-    try:
-        await t3
-    except asyncio.CancelledError:
-        pass
+    if t3 is not None:
+        t3.cancel()
+        try:
+            await t3
+        except asyncio.CancelledError:
+            pass
 
-    # Final commit of any remaining audio, then give OpenAI a moment to return
-    # the last segment before tearing down the OpenAI→client pump.
-    await _commit_if_ready()
+    # Flush any audio still in the buffer. Server-VAD mode may have a trailing
+    # partial turn that hasn't hit a silence boundary yet; a manual commit closes
+    # it so the final words aren't lost. Then give OpenAI a moment to return the
+    # last segment before tearing down the OpenAI→client pump.
+    try:
+        await openai_ws.send(json.dumps({"type": "input_audio_buffer.commit"}))
+    except Exception:
+        pass
     await asyncio.sleep(3.0)
     t2.cancel()
     try:
@@ -416,32 +433,43 @@ async def transcribe_stream_ws(
     try:
         async with ws_lib.connect(openai_url, additional_headers=openai_headers) as openai_ws:
             logger.info("Connected to OpenAI Realtime WebSocket")
+
+            model = settings.REALTIME_TRANSCRIPTION_MODEL
+            is_whisper = model == "gpt-realtime-whisper"
+
+            transcription_cfg: dict = {"model": model, "language": "en"}
+            if is_whisper:
+                # whisper has no server VAD: `delay` enables live partial deltas and
+                # _relay_session commits the buffer on a timer.
+                transcription_cfg["delay"] = settings.REALTIME_TRANSCRIPTION_DELAY
+                turn_detection = None
+            else:
+                # gpt-4o-transcribe family: let SERVER VAD segment on natural silence
+                # and auto commit+clear. silence_duration_ms is how long a pause must
+                # last to close a turn — 500 ms balances responsiveness vs word splits.
+                turn_detection = {
+                    "type": "server_vad",
+                    "threshold": 0.5,
+                    "prefix_padding_ms": 300,
+                    # Shorter silence window → turns close faster → transcript text
+                    # appears after shorter pauses (more responsive). Tunable via env.
+                    "silence_duration_ms": settings.REALTIME_VAD_SILENCE_MS,
+                }
+
             await openai_ws.send(json.dumps({
                 "type": "session.update",
                 "session": {
                     "type": "transcription",
                     "audio": {
                         "input": {
-                            "format": {
-                                "type": "audio/pcm",
-                                "rate": 24000
-                            },
-                            "transcription": {
-                                "model": settings.REALTIME_TRANSCRIPTION_MODEL,
-                                "language": "en",
-                                # `delay` enables live partial (.delta) transcripts;
-                                # lower = earlier text. Without it, whisper only emits
-                                # a single `.completed` per commit (no live captions).
-                                "delay": settings.REALTIME_TRANSCRIPTION_DELAY,
-                            },
-                            # gpt-realtime-whisper has no server VAD — audio is committed
-                            # manually (periodically in _relay_session) to flush segments.
-                            "turn_detection": None
+                            "format": {"type": "audio/pcm", "rate": 24000},
+                            "transcription": transcription_cfg,
+                            "turn_detection": turn_detection,
                         }
                     }
                 },
             }))
-            await _relay_session(websocket, openai_ws)
+            await _relay_session(websocket, openai_ws, manual_commit=is_whisper)
 
 
 
@@ -500,7 +528,9 @@ def _label_transcript(raw_transcript: str, clinician_name: str) -> list[dict]:
     ]
 
     try:
-        output = service.complete(settings.SPEAKER_LABELING_MODEL, messages)
+        # Match the configured service's model (SPEAKER_LABELING_MODEL is an
+        # OpenAI name that 404s on Gemini, silently degrading diarization).
+        output = service.complete(settings.DEFAULT_NOTE_GENERATION_MODEL, messages)
         raw = output.text.strip()
         if raw.startswith("```"):
             raw = raw.split("```")[1]
@@ -706,7 +736,15 @@ async def extension_generate(
 
                 # Trigger single profile-update call if encounter is linked to a patient
                 patient_id_for_update = enc.patient_id or request.patient_id
+                logger.info(
+                    f"Profile update check: enc.patient_id={enc.patient_id!r} "
+                    f"request.patient_id={request.patient_id!r} → using {patient_id_for_update!r}"
+                )
                 if patient_id_for_update:
+                    # Link the encounter to the patient if generate supplied the id
+                    if not enc.patient_id:
+                        enc.patient_id = patient_id_for_update
+                        database.commit()
                     try:
                         patient = database.execute(
                             select(db.Patient).where(
@@ -717,8 +755,13 @@ async def extension_generate(
                         ).scalar_one_or_none()
                         if patient:
                             _update_patient_profile(database, patient, enc.id, request.transcript, final_text)
+                            logger.info(f"Patient profile updated for {patient.id} ({patient.name})")
+                        else:
+                            logger.warning(f"Profile update skipped: patient {patient_id_for_update!r} not found for user {session.username}")
                     except Exception as pe:
-                        logger.error(f"Patient profile update failed (non-fatal): {pe}")
+                        logger.exception(f"Patient profile update failed (non-fatal): {pe}")
+                else:
+                    logger.info("Profile update skipped: no patient linked to this encounter")
     except Exception as e:
         logger.error(f"Failed to persist draft note: {e}")
 
@@ -761,6 +804,7 @@ FORM_SCHEMAS: dict[str, dict] = {
         "providedAt": "Where the service was provided (e.g., Home, Community, Office) — select the closest matching option text.",
         "contactType": "The type/mode of contact (e.g., Face to Face, Telephone, Telehealth) — select the closest matching option text.",
         "summaryOfVisit": "Summary of the visit: services rendered and what occurred.",
+        "monitoringHealthSafety": "Monitoring of the client's health and safety: any health/safety concerns identified during the visit and the follow-up taken to address them. If none were raised, state that no health or safety concerns were noted.",
         "monitoringServices": "Monitoring/oversight activities performed and their outcome.",
     },
     "Person Centered Recovery Plan": {
@@ -1262,8 +1306,11 @@ def _update_patient_profile(
         {"role": "user", "content": user_prompt},
     ]
 
+    # Use the model that matches the configured generative service. The default
+    # SPEAKER_LABELING_MODEL ("gpt-4o-mini") only exists on OpenAI; with a Gemini
+    # service that name 404s and the profile silently stays empty.
     service = generative_ai_services[0]
-    output = service.complete(settings.SPEAKER_LABELING_MODEL, messages)
+    output = service.complete(settings.DEFAULT_NOTE_GENERATION_MODEL, messages)
     raw = output.text.strip()
     if raw.startswith("```"):
         raw = raw.split("```")[1]

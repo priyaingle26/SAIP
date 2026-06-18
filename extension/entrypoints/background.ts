@@ -26,7 +26,8 @@ export default defineBackground(() => {
           await finalizeStreamingSession(payload.audioBase64, payload.mimeType);
         } else {
           // Batch path: upload and transcribe server-side (carry patient if selected)
-          await processAudio(payload.audioBase64, payload.mimeType, payload.encounterId, sessionPatientId ?? undefined);
+          const pid = await getSelectedPatientId();
+          await processAudio(payload.audioBase64, payload.mimeType, payload.encounterId, pid ?? undefined);
         }
       });
     }
@@ -43,9 +44,11 @@ export default defineBackground(() => {
         handleMessage(message, sendResponse);
         return true;
       }
-      // Allow side panel to set the active patient for the recording session
+      // Allow side panel to set the active patient for the recording session.
+      // Persist to storage so it survives service-worker restarts.
       if (message.type === 'SET_PATIENT') {
         sessionPatientId = (message.payload as { patientId: string | null })?.patientId ?? null;
+        chrome.storage.local.set({ [STORAGE_KEYS.selectedPatientId]: sessionPatientId });
         sendResponse({ type: 'AUTH_SUCCESS' }); // reuse generic ack
         return true;
       }
@@ -61,6 +64,16 @@ let realtimeWs: WebSocket | null = null;
 let streamingTranscript: string | null = null; // null = not in streaming mode
 let streamingDeltaBuffer = '';                 // accumulates current partial utterance
 let sessionPatientId: string | null = null;    // patient linked to the current recording session
+
+// Read the selected patient, preferring storage (survives SW restarts) over the
+// in-memory copy. The in-memory variable is null after Chrome recycles the worker.
+async function getSelectedPatientId(): Promise<string | null> {
+  if (sessionPatientId) return sessionPatientId;
+  const result = await chrome.storage.local.get(STORAGE_KEYS.selectedPatientId);
+  const stored = result[STORAGE_KEYS.selectedPatientId] as string | null | undefined;
+  sessionPatientId = stored ?? null;
+  return sessionPatientId;
+}
 
 // ─── Handle the saip-stream port from offscreen ──────────────────────────────
 
@@ -167,7 +180,7 @@ async function openRealtimeWs() {
 
 async function finalizeStreamingSession(audioBase64: string, mimeType: string) {
   const transcript = streamingTranscript ?? '';
-  const patientId = sessionPatientId;
+  const patientId = await getSelectedPatientId();
   streamingTranscript = null;
   streamingDeltaBuffer = '';
 

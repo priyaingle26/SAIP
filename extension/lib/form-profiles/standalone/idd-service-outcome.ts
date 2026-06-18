@@ -15,6 +15,7 @@ export const IDD_SERVICE_OUTCOME: FormProfile = {
     { key: 'providedAt', type: 'dropdown', labels: ['Provided At'] },
     { key: 'contactType', type: 'dropdown', labels: ['Contact Type'] },
     { key: 'summaryOfVisit', type: 'textarea', labels: ['SUMMARY OF VISIT'] },
+    { key: 'monitoringHealthSafety', type: 'textarea', labels: ['MONITORING OF HEALTH AND SAFETY'] },
     { key: 'monitoringServices', type: 'textarea', labels: ['MONITORING SERVICES'] },
   ],
 };

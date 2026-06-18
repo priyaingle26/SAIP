@@ -9,7 +9,7 @@ import TranscriptView from '../../components/TranscriptView';
 import GeneratedNoteView from '../../components/GeneratedNoteView';
 import EncounterHistory from '../../components/EncounterHistory';
 import FormAssistant from '../../components/FormAssistant';
-import { searchPatients, createPatient, fetchPatientProfile, confirmProfileField } from '../../lib/apiClient';
+import { searchPatients, createPatient, fetchPatientProfile, confirmProfileField, getPatient } from '../../lib/apiClient';
 import {
   TabBar, Button, Banner, Spinner, Divider,
   LogOutIcon, FileTextIcon, HistoryIcon, MicIcon, AlertIcon, UploadIcon,
@@ -163,6 +163,14 @@ export default function App() {
   useEffect(() => {
     getStoredUser().then(setUser);
     loadEncounters();
+    // Restore the previously selected patient (persisted across SW restarts)
+    chrome.storage.local.get('saip_selected_patient_id').then(async (r) => {
+      const pid = r['saip_selected_patient_id'] as string | null | undefined;
+      if (pid) {
+        const res = await getPatient(pid);
+        if (res.success && res.data) setSelectedPatient(res.data);
+      }
+    });
   }, []);
 
   // Auto-scroll live captions to bottom
@@ -362,7 +370,8 @@ export default function App() {
     setPatientResults([]);
     setPatientQuery('');
     setShowPatientPicker(false);
-    // Inform background so recording picks up patient_id
+    // Persist directly (survives SW restarts) AND notify background for immediacy.
+    chrome.storage.local.set({ saip_selected_patient_id: patient?.id ?? null });
     chrome.runtime.sendMessage({ type: 'SET_PATIENT', payload: { patientId: patient?.id ?? null } });
   }, []);
 
@@ -693,7 +702,7 @@ export default function App() {
             )}
 
             {/* ── Live captions (shown during recording when streaming is active) ── */}
-            {(isRecording || isStreaming) && (committedLines.length > 0 || liveCaption) && (
+            {(isRecording || isStreaming) && (
               <div style={{ width: '100%' }}>
                 <p style={captionLabel}>Live Captions</p>
                 <div style={captionBox}>
@@ -703,6 +712,11 @@ export default function App() {
                   {liveCaption && (
                     <p style={{ margin: 0, lineHeight: 1.55, fontSize: 'var(--text-sm)', color: 'var(--color-muted)', fontStyle: 'italic' }}>
                       {liveCaption}
+                    </p>
+                  )}
+                  {committedLines.length === 0 && !liveCaption && (
+                    <p style={{ margin: 0, lineHeight: 1.55, fontSize: 'var(--text-sm)', color: 'var(--color-muted-2)', fontStyle: 'italic' }}>
+                      Listening… captions appear each time you pause speaking.
                     </p>
                   )}
                   <div ref={captionEndRef} />

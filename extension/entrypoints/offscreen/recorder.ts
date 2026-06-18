@@ -13,23 +13,10 @@ let pcmSource: MediaStreamAudioSourceNode | null = null;
 let pcmProcessor: ScriptProcessorNode | null = null;
 let streamPort: chrome.runtime.Port | null = null;
 
-// ─── AudioWorklet processor code (inline blob) ───────────────────────────────
-// Converts float32 input to PCM16 and posts frames to the main thread.
-const WORKLET_CODE = `
-class Pcm16Processor extends AudioWorkletProcessor {
-  process(inputs) {
-    const ch = inputs[0]?.[0];
-    if (!ch) return true;
-    const pcm = new Int16Array(ch.length);
-    for (let i = 0; i < ch.length; i++) {
-      pcm[i] = Math.max(-32768, Math.min(32767, ch[i] * 32767 | 0));
-    }
-    this.port.postMessage({ pcm: pcm.buffer }, [pcm.buffer]);
-    return true;
-  }
-}
-registerProcessor('pcm16-processor', Pcm16Processor);
-`;
+// The AudioWorklet processor lives in public/pcm-worklet.js and is loaded by
+// extension-origin URL (chrome.runtime.getURL). A blob: URL is blocked by the
+// extension CSP (`script-src 'self'`), which previously forced a silent fallback
+// to the deprecated ScriptProcessorNode.
 
 // ─── Listen for commands from background worker ───────────────────────────────
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -101,12 +88,10 @@ async function startPcmCapture(stream: MediaStream) {
     audioContext = new AudioContext({ sampleRate: TARGET_SAMPLE_RATE });
     pcmSource = audioContext.createMediaStreamSource(stream);
 
-    // Try AudioWorklet first
-    const blob = new Blob([WORKLET_CODE], { type: 'application/javascript' });
-    const url = URL.createObjectURL(blob);
+    // Load the worklet from an extension-origin URL (CSP-safe, not a blob:)
     try {
-      await audioContext.audioWorklet.addModule(url);
-      URL.revokeObjectURL(url);
+      const workletUrl = chrome.runtime.getURL('pcm-worklet.js');
+      await audioContext.audioWorklet.addModule(workletUrl);
 
       const workletNode = new AudioWorkletNode(audioContext, 'pcm16-processor');
       workletNode.port.onmessage = (ev) => {
@@ -116,7 +101,6 @@ async function startPcmCapture(stream: MediaStream) {
       pcmSource.connect(workletNode);
       // AudioWorklet does not need to be connected to destination to fire
     } catch {
-      URL.revokeObjectURL(url);
       startScriptProcessorFallback();
     }
   } catch {
