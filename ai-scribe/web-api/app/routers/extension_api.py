@@ -1269,6 +1269,7 @@ EVALUATION_SCHEMAS: dict[str, dict] = {
         "historySource": "Source of the patient history (e.g., Patient, Parent/Guardian).",
         "chiefComplaint": "The chief complaint / reason for this visit.",
         "historyPresentIllness": "History of present illness (HPI) — a narrative of the current complaint and its course.",
+        "riskAssessmentSummary": "Summary of suicidal/homicidal ideation risk as assessed this visit. Summarize risk level, protective factors, and clinical impression. Empty string if not discussed.",
         **_MSE_FIELDS,
         **_ROS_FIELDS,
         **_MEDICAL_BMI_FIELDS,
@@ -1280,6 +1281,17 @@ EVALUATION_SCHEMAS: dict[str, dict] = {
 # when opened individually (no bundle fvid in the URL).
 FORM_SCHEMAS["Mental Status Exam"] = {**_MSE_FIELDS}
 FORM_SCHEMAS["Review of Systems"] = {**_ROS_FIELDS}
+FORM_SCHEMAS["E&M EPT - Patient History"] = {
+    "historySource": (
+        "Who provided the source of history for this visit. "
+        "One of: Patient, Patient / LAR / Parent, Patient / Other Family, "
+        "Patient / Other Advocate, Patient / Other Mental Health Provider, "
+        "Patient / Records Review (Summarize in HPA). Empty string if not stated."
+    ),
+    "chiefComplaint": "The chief complaint / reason for this visit. Summarize from the transcript.",
+    "historyPresentIllness": "History of present illness (HPI) — a narrative of the current complaint and its course. Summarize from the transcript.",
+    "riskAssessmentSummary": "Summary of suicidal/homicidal ideation risk as assessed this visit. Summarize risk level, protective factors, and clinical impression. Empty string if not discussed.",
+}
 
 
 class EvaluationAnswersRequest(BaseModel):

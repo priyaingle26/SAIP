@@ -128,7 +128,11 @@ app.add_middleware(
         "http://127.0.0.1:4000",
         "http://192.168.1.11:4000"
     ],
-    allow_origin_regex=r"chrome-extension://.*",
+    # chrome-extension://* — sidepanel / background service worker calls
+    # *.crediblebh.com    — content script fetch() runs in Credible's page
+    #                        context so Origin is the Credible domain, not
+    #                        the extension origin
+    allow_origin_regex=r"(chrome-extension://.*|https?://.*\.crediblebh\.com)",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
