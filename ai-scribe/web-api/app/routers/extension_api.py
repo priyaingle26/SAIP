@@ -790,6 +790,7 @@ FORM_SCHEMAS: dict[str, dict] = {
         "jointPlanningReflection": "What has happened since the last visit and what was planned to work on during this visit.",
         "observationPractice": "What was observed and practiced during the visit, including feedback provided.",
         "reflectionFeedback": "What the parent/caregiver will work on between visits and the plan for the next visit.",
+        "nextVisitDate": "The date the next visit is scheduled, in YYYY-MM-DD format. Only fill this when a specific next-visit date is stated or clearly derivable from the visit; empty string otherwise. Resolve relative references (e.g. 'next Tuesday', 'in two weeks') against today's date.",
     },
     "FAYS SOAP Note": {
         "participants": "Who was present (e.g., Youth, Primary Participating Caregiver, Secondary Participating Caregiver, Other family member/participants) — comma-separated.",
@@ -836,6 +837,131 @@ FORM_SCHEMAS: dict[str, dict] = {
         "nextSessionPlan": "Plan for the next session, including skills to practice.",
         "currentDiagnosis": "The client's current diagnosis, if mentioned.",
     },
+    "T-KIDS Delivered Services": {
+        "deliveredServiceTypeCode": "The type of service delivered during this visit. Choose the single closest match from EXACTLY these options: Assistive Technology, Audiology Services, Nutrition, Occupational Therapy, Physical Therapy, Specialized Skills Training, Speech Language Therapy, Vision Services. Infer from what the visit was about (e.g., speech/language work -> Speech Language Therapy; motor/feeding/daily-living skills -> Occupational Therapy; gross-motor/mobility -> Physical Therapy). Empty string only if the visit gives no indication of the service type.",
+        "coVisit": "Whether this was a co-visit (two providers present at the same visit). One of: Yes, No. Empty string if not assessable.",
+    },
+    "28-Day": {
+        "was28DayVisit": "Whether this was a 28-day visit. One of: Yes, No. Empty string if not stated.",
+        "reason": "If this was not a standard visit, the reason category for the deviation. One of: Program, Family, Other. Empty string if not applicable.",
+        "justification": "Free-text justification explaining the reason, if a reason was given. Empty string if none.",
+    },
+    "Batching (PM USE ONLY)": {
+        "omitFromBatch": "Program-manager-only control to omit this note from the TKIDS batch. One of: Yes (empty string otherwise). Leave empty unless the visit explicitly calls for omission — this is an administrative decision, not a clinical one.",
+    },
+    "Medications": {
+        "aimsScore": "AIMS (abnormal involuntary movement) score result. One of: Positive, Negative, N/A, Unable to perform due to visit type COVID 19. Empty string if not stated.",
+        "aimsDateLastDone": "Date the AIMS was last done, in YYYY-MM-DD format. Empty string if not stated.",
+        "medReconciliationReviewed": "Pre-existing medications reviewed for medication reconciliation this visit. One of: Yes, No. Empty string if not stated.",
+        "pdmpReviewed": "PDMP database reviewed selection (exact option text as shown on the form). Empty string if not stated.",
+        "otcMedications": "Has the patient taken any over-the-counter medications, herbal supplements or vitamins. One of: Yes, No. Empty string if not stated.",
+        "otcList": "If OTC/herbal/vitamins were taken, list them. Empty string otherwise.",
+        "onMultipleAntipsychotics": "Patient is on more than 2 anti-psychotics. One of: Yes, No. Empty string if not stated.",
+        "benzodiazepineUsage": "Benzodiazepine usage. One of: Yes, No. Empty string if not stated.",
+        "educationOnRisk": "Education on risk provided. One of: Yes, No, N/A. Empty string if not stated.",
+        "controlledMeds": "Controlled medications (including from other providers). One of: Yes, No. Empty string if not stated.",
+    },
+    "Plan / Recommendations": {
+        "labReviewed": "Lab information reviewed and/or lab tests ordered. One of: Yes, No. Empty string if not stated.",
+        "labComments": "Lab-related comments, if any. Empty string otherwise.",
+        "labDateDrawn": "Date labs were drawn, in YYYY-MM-DD format. Empty string if not stated.",
+        "labWnl": "Labs within normal limits. One of: Yes, No, N/A - See Comments. Empty string if not stated.",
+        "problem1": "The first problem identified in the plan. Empty string if none.",
+        "status1": "Status of the first problem. Empty string if none.",
+        "plan1": "Plan/recommendation for the first problem. Empty string if none.",
+        "treatmentPlanComments": "Overall treatment plan comments. Empty string if nothing relevant.",
+        "returnTo": "Who the patient should return to, comma-separated, chosen only from: Nurse, NP, PA, Doctor, N/A - Discharged. Empty string if not stated.",
+        "returnInWeeks": "Return interval in weeks (number). Empty string if not stated.",
+    },
+    "Diagnostic Review": {
+        "reasonForAction": "Reason for action. One of: Admission or Provisional, Death, Discharge (MH Campus Only), Reevaluation. Empty string if not stated.",
+        "axisLevel": "R69 axis level(s), comma-separated, chosen only from: Axis Level 1, Axis Level 2, Axis Level 3. Empty string if not stated.",
+        "currentAdaptiveLevel": "Current adaptive behavioral level. One of: Mild, Moderate, Not Intellectually Disabled, Profound, Severe. Empty string if not stated.",
+        "potentialAdaptiveLevel": "Potential adaptive behavioral level. One of: Mild, Moderate, Not Intellectually Disabled, Profound, Severe. Empty string if not stated.",
+        "iqTestScore": "IQ test score (number). Empty string if not stated.",
+        "iqTestType": "IQ test type (exact test name as shown on the form). Empty string if not stated.",
+        "iqTestDate": "IQ test date, in YYYY-MM-DD format. Empty string if not stated.",
+        "sqTestScore": "SQ (social quotient/adaptive) test score (number). Empty string if not stated.",
+        "sqTestType": "SQ test type (exact test name as shown on the form). Empty string if not stated.",
+        "sqTestDate": "SQ test date, in YYYY-MM-DD format. Empty string if not stated.",
+    },
+    "IDD ONLY": {
+        "currentAdaptiveLevel": "Current adaptive behavioral level. One of: Zero, One, Two, Three, Four. Empty string if not stated.",
+        "potentialAdaptiveLevel": "Potential adaptive behavioral level. One of: Zero, One, Two, Three, Four. Empty string if not stated.",
+        "adaptiveLevelDate": "Adaptive behavioral level date, in YYYY-MM-DD format. Empty string if not stated.",
+        "icapLon": "ICAP LON value. One of: 1, 5, 6, 8, 9. Empty string if not stated.",
+        "icapLos": "ICAP LOS value. One of: 1, 2, 3, 4, 5, 6, 7, 8, 9, Any. Empty string if not stated.",
+        "icapDate": "ICAP date, in YYYY-MM-DD format. Empty string if not stated.",
+        "iqScore": "IQ score (number). Empty string if not stated.",
+        "iqTestType": "IQ test type. Empty string if not stated.",
+        "iqTestDate": "IQ test date, in YYYY-MM-DD format. Empty string if not stated.",
+        "sqScore": "SQ score (number). Empty string if not stated.",
+        "sqTestType": "SQ test type. Empty string if not stated.",
+        "sqTestDate": "SQ test date, in YYYY-MM-DD format. Empty string if not stated.",
+        "mobility": "Mobility description. Empty string if not stated.",
+        "sensoryImpairment": "Sensory impairment description. Empty string if not stated.",
+    },
+    "IDD CASE MGT Short Note": {
+        "providedTo": "Who services were provided to (e.g. Individual/Client, Family, Guardian, Caregiver, Advocate). Empty string if not stated.",
+        "providedAt": "Where services were provided (e.g. Home, Office, Community, Telehealth). Empty string if not stated.",
+        "contactType": "Type of contact (e.g. Face-to-Face, Phone, Telehealth, Written Communication). Empty string if not stated.",
+        "descriptionOfServices": "Narrative description of the service(s) provided during this IDD case management contact. Summarize from the transcript.",
+        "summaryNeeds": "Narrative summary of needs or issues identified/addressed and activities performed. Summarize from the transcript.",
+        "recommendations": "Recommendations, referrals, or plan discussed during this contact. Summarize from the transcript.",
+    },
+    "Adult Substance Use": {
+        "auditFrequency": "AUDIT-C Q1: how often do you have a drink containing alcohol. Score 0-4 (0=Never, 1=Monthly or less, 2=2-4 times a month, 3=2-3 times a week, 4=4+ times a week). Empty string if not assessable.",
+        "auditTypicalDay": "AUDIT-C Q2: how many standard drinks on a typical drinking day. Score 0-4 (0=1-2, 1=3-4, 2=5-6, 3=7-9, 4=10+). Empty string if not assessable.",
+        "auditBinge": "AUDIT-C Q3: how often six or more drinks on one occasion. Score 0-4 (0=Never, 1=Less than monthly, 2=Monthly, 3=Weekly, 4=Daily or almost daily). Empty string if not assessable.",
+        "auditResult": "Whether the total AUDIT-C score is positive or negative for unhealthy alcohol use. One of: Positive, Negative. Empty string if not assessable.",
+        "tobaccoStatus": "Tobacco use status. One of: Current User, Never Used, Past User. Empty string if not stated.",
+        "tobaccoProducts": "Tobacco products the patient uses, comma-separated, chosen only from: Bidis, Chewing Tobacco, Cigars / Cigarillos, Cigarettes, Vaping, Hookah, Kreteks, Pipe, Snuff. Empty string if none/not stated.",
+        "tobaccoFrequency": "How frequently the patient uses tobacco per day. One of: 1-5 times per day, 5-10 times per day, 10-15 times per day, 15-20 times per day, 20 or more times per day. Empty string if not stated.",
+        "tobaccoWaking": "How soon within waking the patient uses tobacco. One of: Less than 30 minutes, Greater than 30 minutes. Empty string if not stated.",
+        "tobaccoReadyQuit": "How ready the patient is to quit tobacco. One of: In the next 30 days, In the next 6 months, Eventually, Not at all. Empty string if not stated.",
+        "tobaccoCessationEducation": "Tobacco cessation education/counseling provided. One of: Yes, No. Empty string if not stated.",
+        "illegalDrugUse": "Has the patient used illegal drugs or prescription drugs for non-medical reasons within the last month. One of: Yes, No. Empty string if not stated.",
+        "illegalDrugList": "If illegal/non-medical drug use was reported, list the substances. Empty string otherwise.",
+        "substanceUseComments": "Narrative substance use and tobacco screening comments. Empty string if nothing relevant.",
+    },
+    "Child Substance Use": {
+        "crafftA1": "CRAFFT Part A Q1: in the past 12 months, drank any alcohol (more than a few sips). One of: Yes, No. Empty string if not assessable.",
+        "crafftA2": "CRAFFT Part A Q2: smoked any marijuana or hashish. One of: Yes, No. Empty string if not assessable.",
+        "crafftA3": "CRAFFT Part A Q3: used anything else to get high. One of: Yes, No. Empty string if not assessable.",
+        "crafftAAnyYes": "Did the individual answer Yes to any Part A question. One of: Yes, No. Empty string if not assessable.",
+        "crafftB1": "CRAFFT Part B Q1: ridden in a car driven by someone (including self) who was high or using alcohol/drugs. Score 1 for Yes, 0 for No. Empty string if not assessable.",
+        "crafftB2": "CRAFFT Part B Q2: use alcohol or drugs to relax, feel better, or fit in. Score 1 for Yes, 0 for No. Empty string if not assessable.",
+        "crafftB3": "CRAFFT Part B Q3: use alcohol or drugs while by yourself or alone. Score 1 for Yes, 0 for No. Empty string if not assessable.",
+        "crafftB4": "CRAFFT Part B Q4: forget things you did while using alcohol or drugs. Score 1 for Yes, 0 for No. Empty string if not assessable.",
+        "crafftB5": "CRAFFT Part B Q5: family or friends told you to cut down on drinking/drug use. Score 1 for Yes, 0 for No. Empty string if not assessable.",
+        "crafftB6": "CRAFFT Part B Q6: gotten in trouble while using alcohol or drugs. Score 1 for Yes, 0 for No. Empty string if not assessable.",
+        "tobaccoStatus": "Tobacco use status. One of: Current User, Never Used, Past User. Empty string if not stated.",
+        "tobaccoProducts": "Tobacco products the patient uses, comma-separated, chosen only from: Bidis, Chewing Tobacco, Cigars / Cigarillos, Cigarettes, Vaping, Hookah, Kreteks, Pipe, Snuff. Empty string if none/not stated.",
+        "tobaccoFrequency": "How frequently the patient uses tobacco per day. One of: 1-5 times per day, 5-10 times per day, 10-15 times per day, 15-20 times per day, 20 or more times per day. Empty string if not stated.",
+        "tobaccoWaking": "How soon within waking the patient uses tobacco. One of: Less than 30 minutes, Greater than 30 minutes. Empty string if not stated.",
+        "tobaccoReadyQuit": "How ready the patient is to quit tobacco. One of: In the next 30 days, In the next 6 months, Eventually, Not at all. Empty string if not stated.",
+        "tobaccoCessationEducation": "Tobacco cessation education/counseling provided. One of: Yes, No. Empty string if not stated.",
+        "illegalDrugUse": "Has the patient used illegal drugs or prescription drugs for non-medical reasons within the last month. One of: Yes, No. Empty string if not stated.",
+        "illegalDrugList": "If illegal/non-medical drug use was reported, list the substances. Empty string otherwise.",
+        "substanceUseComments": "Narrative substance use and tobacco screening comments/referrals. Empty string if nothing relevant.",
+    },
+    "BMI Eval": {
+        "bmiNotMeasuredReason": "Reason BMI was not measured, if applicable. One of: Immobile, Measurement Device Capacity Exceeded, Refused. Empty string if BMI was measured or not stated.",
+        "bmiPopulation": "BMI population category. One of: Adult - Age 18 or greater, Child / Adolescent - Age 3 - 17, Not Performed. Empty string if not stated.",
+        "weightChange": "Weight change from previous visit. One of: Increased, Decreased, Same, N/A. Empty string if not stated.",
+        "weightChangePounds": "Weight change in pounds from previous visit (number). Empty string if not stated.",
+        "bmiCalculationType": "How the BMI value was obtained. One of: Actual, Reported. Empty string if not stated.",
+        "adultCurrentBmi": "Adult current visit BMI value (number). Empty string if not stated.",
+        "childBmiPercentile": "Child/youth current visit BMI percentile. Empty string if not stated.",
+        "bmiOutsideNormal": "Is BMI outside normal parameters for age. One of: Yes, No. Empty string if not stated.",
+        "nutritionCounseling": "Nutrition counseling provided. One of: Yes, No. Empty string if not stated.",
+        "exerciseCounseling": "Exercise counseling provided. One of: Yes, No. Empty string if not stated.",
+        "weightMgmtEducation": "Education for weight management provided. One of: Yes, No. Empty string if not stated.",
+        "dietarySupplements": "Dietary supplements recommended. One of: Yes, No. Empty string if not stated.",
+        "medicationAdjustment": "Medication adjustment / change made. One of: Yes, No. Empty string if not stated.",
+        "referredToPcp": "Referred to PCP for weight management. One of: Yes, No. Empty string if not stated.",
+        "bmiComments": "Narrative BMI measurement comments, if any were discussed. Empty string otherwise.",
+    },
     "PHQ-9 Adult": {
         "phqInterest": "Item: Little interest or pleasure in doing things. Score 0-3, or empty string if not assessable.",
         "phqMood": "Item: Feeling down, depressed, or hopeless. Score 0-3, or empty string if not assessable.",
@@ -847,6 +973,7 @@ FORM_SCHEMAS: dict[str, dict] = {
         "phqPsychomotor": "Item: Moving/speaking slowly, or being fidgety/restless. Score 0-3, or empty string if not assessable.",
         "phqSelfHarm": "Item: Thoughts of being better off dead or of self-harm. Score 0-3, or empty string if not assessable.",
         "phqDifficulty": "How difficult these problems made daily functioning. One of: Not difficult at all, Somewhat difficult, Very difficult, Extremely difficult. Empty string if not assessable.",
+        "phqDate": "Today's date (the date the screening was completed), in YYYY-MM-DD format. Use today's date if a screening occurred; empty string otherwise.",
     },
     "PHQ-9 Adolescent": {
         "phqMood": "Item: Feeling down, depressed, irritable, or hopeless. Score 0-3, or empty string if not assessable.",
@@ -861,6 +988,52 @@ FORM_SCHEMAS: dict[str, dict] = {
         "phqDepressedPastYear": "In the past year, felt depressed or sad most days even if okay sometimes. One of: Yes, No. Empty string if not assessable.",
         "phqDifficulty": "How difficult these problems made daily functioning. One of: Not difficult at all, Somewhat difficult, Very difficult, Extremely difficult. Empty string if not assessable.",
         "phqSuicidalPastMonth": "In the past month, had serious thoughts about ending your life. One of: Yes, No. Empty string if not assessable.",
+        "phqEverAttempt": "Have you EVER, in your whole life, tried to kill yourself or made a suicide attempt. One of: Yes, No. Empty string if not assessable.",
+        "phqDate": "Today's date (the date the screening was completed), in YYYY-MM-DD format. Use today's date if a screening occurred; empty string otherwise.",
+    },
+    "Suicide/Homicide Risk": {
+        "sourceOfHistory": (
+            "Who provided the source of history for this assessment. "
+            "One of: Patient, Patient / LAR / Parent, Patient / Other Family, "
+            "Patient / Other Advocate, Patient / Other Mental Health Provider, "
+            "Patient / Records Review (Summarize in HPA). Empty string if not stated."
+        ),
+        "wishedDead": (
+            "C-SSRS Item 1 — Passive suicidal ideation: Has the patient wished they were dead "
+            "or wished they could go to sleep and not wake up? Return Y if endorsed, N if denied, "
+            "or empty string if not discussed."
+        ),
+        "thoughtsKillingSelf": (
+            "C-SSRS Item 2 — Active suicidal ideation (non-specific): Has the patient had thoughts "
+            "of killing themselves? Return Y if endorsed, N if denied, or empty string if not discussed."
+        ),
+        "thinkingHowKillSelf": (
+            "C-SSRS Item 3 — Active ideation with method: Has the patient been thinking about HOW "
+            "they might kill themselves? Return Y if endorsed, N if denied, or empty string if not discussed."
+        ),
+        "intentionToAct": (
+            "C-SSRS Item 4 — Active ideation with intent: Has the patient had thoughts of killing "
+            "themselves AND had some intention of acting on them? Return Y if endorsed, N if denied, "
+            "or empty string if not discussed."
+        ),
+        "detailsAndIntent": (
+            "C-SSRS Item 5 — Active ideation with plan: Has the patient started to work out the "
+            "details of how to kill themselves? Return Y if endorsed, N if denied, or empty string "
+            "if not discussed."
+        ),
+        "suicidalBehavior": (
+            "C-SSRS Item 6 — Suicidal behavior (preparatory/attempt): Has the patient done anything, "
+            "started to do anything, or prepared to do anything to end their life? Return Y if endorsed, "
+            "N if denied, or empty string if not discussed."
+        ),
+        "homicidalIdeation": (
+            "C-SSRS Homicide Item 1: Has the patient had thoughts of killing someone else? "
+            "Return Y if endorsed, N if denied, or empty string if not discussed."
+        ),
+        "homicidalPlan": (
+            "C-SSRS Homicide Item 2: Has the patient started to work out the details of how to kill "
+            "someone else? Return Y if endorsed, N if denied, or empty string if not discussed."
+        ),
     },
 }
 
@@ -911,13 +1084,18 @@ def _generate_structured_fields(schema: dict, subject_label: str, subject_value:
         "'more than half the days'/'often'/'a lot' → 2; 'nearly every day'/'almost always'/"
         "'constantly' → 3. Use an empty string only when the patient gave no indication about that "
         "symptom.\n"
+        "For date fields, return the date in YYYY-MM-DD format. Only fill a date when it is "
+        "explicitly stated or clearly derivable; resolve relative references (e.g. 'next "
+        "Tuesday') against TODAY'S DATE given below. Empty string if no date applies.\n"
         "For fields with a controlled list of options, return ONLY option text exactly as given, "
         "comma-separated if multiple apply.\n"
         "Return ONLY valid JSON. Return EVERY field defined in the schema.\n"
         "Do not return markdown. Do not return explanations."
     )
 
+    from datetime import date as _date
     user_prompt = (
+        f"TODAY'S DATE: {_date.today().isoformat()}\n\n"
         f"{subject_label}:\n{subject_value}\n\n"
         f"FORM CONTEXT (raw page text):\n{form_context[:4000]}\n\n"
         f"TRANSCRIPT:\n{transcript}\n\n"
@@ -1066,8 +1244,8 @@ _MSE_FIELDS = {
 }
 
 _ROS_FIELDS = {
-    "rosFindings": "Comma-separated list of body systems with POSITIVE findings on review of systems, chosen only from: Constitutional, Eyes, ENT, Cardiovascular, Respiratory, Gastrointestinal, Genitourinary, Musculoskeletal, Skin, Neurological, Psychiatric. Empty string if all systems are negative/unremarkable.",
-    "rosComments": "Narrative comments elaborating on the review of systems findings.",
+    "rosFindings": "Comma-separated list of body systems with POSITIVE findings on review of systems, chosen only from: Constitutional, Eyes, Ears/Nose/Throat, Cardiovascular, Respiratory, Gastrointestinal, Genitourinary, Musculoskeletal, Integumentary, Neurological, Endocrine, Hematologic/Lymphatic. Empty string if all systems are negative/unremarkable.",
+    "rosComments": "Narrative comments elaborating on the review of systems findings (the 'Current Review of Systems and Changes Noted' field).",
 }
 
 _MEDICAL_BMI_FIELDS = {
@@ -1096,6 +1274,12 @@ EVALUATION_SCHEMAS: dict[str, dict] = {
         **_MEDICAL_BMI_FIELDS,
     },
 }
+
+# Single-form schemas that reuse the shared evaluation field dicts above. These
+# let the eval sub-pages also work via the single-form path (/generate-form-answers)
+# when opened individually (no bundle fvid in the URL).
+FORM_SCHEMAS["Mental Status Exam"] = {**_MSE_FIELDS}
+FORM_SCHEMAS["Review of Systems"] = {**_ROS_FIELDS}
 
 
 class EvaluationAnswersRequest(BaseModel):

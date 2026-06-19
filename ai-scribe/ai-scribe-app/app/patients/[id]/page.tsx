@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { use, useState } from "react";
-import { PatientsProvider, usePatients } from "@/services/state/patients-context";
+import { PatientsProvider } from "@/services/state/patients-context";
 import { PatientProfileView } from "@/features/patient-management/patient-profile-view";
 import { patientsApi, Patient } from "@/services/web-api/patients";
 import { useEffect } from "react";

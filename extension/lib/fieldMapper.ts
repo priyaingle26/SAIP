@@ -316,6 +316,31 @@ function fillText(labels: string[], value: string): boolean {
   return true;
 }
 
+// ─── Date input (<input type="date">) finder ─────────────────────────────────
+// Native date inputs require a YYYY-MM-DD value regardless of the locale shown
+// in the picker. We accept whatever the AI returns (ISO, US, or a parseable
+// string), normalize to YYYY-MM-DD, and bail if it isn't a real date.
+function normalizeDate(value: string): string | null {
+  const v = value.trim();
+  if (!v) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v; // already ISO
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return null;
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function fillDate(labels: string[], value: string): boolean {
+  const iso = normalizeDate(value);
+  if (!iso) return false;
+  const input = findElementByLabel<HTMLInputElement>('input[type="date"]', labels);
+  if (!input) return false;
+  setNativeValue(input, iso);
+  return true;
+}
+
 // ─── Dropdown (<select>) finder ───────────────────────────────────────────────
 function fillDropdown(labels: string[], value: string): boolean {
   const select = findElementByLabel<HTMLSelectElement>('select', labels);
@@ -370,7 +395,7 @@ function selectRadio(groupKeywords: string[], targetValue: string): boolean {
 // fireScoredClicksSequentially() — see below.
 function findScoredButton(labels: string[], value: string): HTMLInputElement | null {
   const wanted = value.trim();
-  if (!/^\d+$/.test(wanted)) return null; // scored widgets expect a numeric value
+  if (!wanted) return null;
 
   const buttons = Array.from(
     document.querySelectorAll<HTMLInputElement>('input[type="button"][id^="x_"]')
@@ -390,9 +415,38 @@ function findScoredButton(labels: string[], value: string): HTMLInputElement | n
     const row = groupButtons[0].closest('tr');
     const rowText = (row?.innerText ?? row?.textContent ?? '').toUpperCase();
     if (!upperLabels.some((l) => rowText.includes(l))) continue;
-    return groupButtons.find((b) => b.value.trim() === wanted) ?? null;
+    return groupButtons.find((b) => b.value.trim().toUpperCase() === wanted.toUpperCase()) ?? null;
   }
   return null;
+}
+
+// ─── Anchored scored option buttons (AUDIT-C style) ──────────────────────────
+// Unlike PHQ widgets (one shared id, buttons valued 0-3), AUDIT-C renders each
+// answer OPTION as its own x_ button (unique id) whose value is that option's
+// score; the row text is the option label, not the question. We scope to the
+// question via its text anchor, then take the first increasing-value run of x_
+// buttons that follow it (= that question's option set) and pick value===score.
+function findAnchoredScoredButton(labels: string[], value: string): HTMLInputElement | null {
+  const wanted = value.trim();
+  if (!/^\d+$/.test(wanted)) return null;
+  const anchor = findTextAnchor(labels);
+  if (!anchor) return null;
+
+  const buttons = Array.from(
+    document.querySelectorAll<HTMLInputElement>('input[type="button"][id^="x_"]'),
+  );
+  const after = buttons.filter(
+    (b) => (anchor.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0,
+  );
+
+  const group: HTMLInputElement[] = [];
+  for (const b of after) {
+    const v = Number.parseInt(b.value, 10);
+    if (Number.isNaN(v)) break;
+    if (group.length && v <= Number.parseInt(group[group.length - 1].value, 10)) break;
+    group.push(b);
+  }
+  return group.find((b) => b.value.trim() === wanted) ?? null;
 }
 
 // Is this scored button already the selected one in its row? Selection is shown
@@ -409,6 +463,17 @@ function isScoredButtonSelected(btn: HTMLInputElement): boolean {
         `input[type="button"][name="${CSS.escape(btn.name)}"]`,
       ),
     );
+  }
+  // AUDIT-C style: each option has a unique name, so the shared-name group is a
+  // single button. Fall back to the enclosing table's scored buttons so the
+  // majority (unselected) colour can still be determined.
+  if (group.length < 2) {
+    const table = btn.closest('table');
+    if (table) {
+      group = Array.from(
+        table.querySelectorAll<HTMLInputElement>('input[type="button"][id^="x_"]'),
+      );
+    }
   }
   if (group.length < 2) return false; // can't compare — assume not selected
 
@@ -626,15 +691,6 @@ function applyMseGroups(fields: FieldDef[], values: Record<string, string>): { f
   return { filled, missed };
 }
 
-// ─── Scored widget detection (PHQ-9, AUDIT-C, CRAFFT, C-SSRS) ─────────────────
-// x_NNNNNN button-group widgets are patient-administered scored values and
-// are NEVER auto-filled (proposal.md patient-safety decision). Recognized and
-// reported as "manual entry required" instead.
-function detectScoredWidgets(): string[] {
-  const buttons = Array.from(document.querySelectorAll<HTMLInputElement>('input[type="button"][id^="x_"]'));
-  return Array.from(new Set(buttons.map((b) => b.id)));
-}
-
 // ─── Main autofill entry point ────────────────────────────────────────────────
 export interface AutofillResult {
   filled: number;
@@ -711,6 +767,9 @@ export function applyFormAutofill(
       case 'text':
         ok = fillText(field.labels, value);
         break;
+      case 'date':
+        ok = fillDate(field.labels, value);
+        break;
       case 'dropdown':
         ok = fillDropdown(field.labels, value);
         break;
@@ -721,6 +780,12 @@ export function applyFormAutofill(
         // Resolve the target button now (so filled/missed counts are accurate),
         // but defer the actual click to a staggered pass after the loop.
         const btn = findScoredButton(field.labels, value);
+        ok = !!btn;
+        if (btn) scoredClicks.push(btn);
+        break;
+      }
+      case 'scored-options': {
+        const btn = findAnchoredScoredButton(field.labels, value);
         ok = !!btn;
         if (btn) scoredClicks.push(btn);
         break;
@@ -744,12 +809,19 @@ export function applyFormAutofill(
     void fireScoredClicksSequentially(scoredClicks);
   }
 
-  // A scored widget needs manual entry only if we did NOT fill it. Each clicked
-  // button's id/name is its widget group id (e.g. x_516210), so widgets we filled
-  // are excluded from manualRequired — preventing the bogus "N scored items need
-  // manual entry" banner when they were in fact auto-filled.
-  const filledWidgetIds = new Set(scoredClicks.map((b) => b.id || b.name));
-  const manualRequired = detectScoredWidgets().filter((id) => !filledWidgetIds.has(id));
+  // "Manual entry required" = the profile's own scored fields we could NOT
+  // auto-fill (empty value, or a button we couldn't resolve). Keyed by field name
+  // (readable) and profile-scoped, so AUDIT-C's per-option button ids no longer
+  // inflate the count, and auto-filled widgets are correctly excluded.
+  const SCORED_TYPES = new Set(['scored-widget', 'scored-options']);
+  const manualRequired = profile.fields
+    .filter((f) => {
+      if (!SCORED_TYPES.has(f.type)) return false;
+      const v = effectiveFields[f.key];
+      const filledOk = !!v && v.trim() !== '' && !missed.includes(f.key);
+      return !filledOk;
+    })
+    .map((f) => f.key);
 
   const labelsSeen = Array.from(textareaLabelMap.keys());
 

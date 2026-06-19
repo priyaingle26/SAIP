@@ -8,11 +8,13 @@ export type FieldType =
   | 'textarea' // q_/qnotes_ rich-text widget
   | 'plain-textarea' // bare <textarea>, no q_ pairing
   | 'text' // <input type="text">
+  | 'date' // <input type="date"> (value normalized to YYYY-MM-DD)
   | 'dropdown' // <select>
   | 'radio' // single-choice radio group
   | 'checkbox-group' // flat, non-q_ multi-select checkboxes
   | 'mse-group' // checkboxes sharing one q_ id, multi-select within the group
-  | 'scored-widget'; // x_ button-group (0/1/2/3), one button clicked by value
+  | 'scored-widget' // x_ button-group sharing one id (0/1/2/3), one button clicked by value
+  | 'scored-options'; // AUDIT-C style: each option is its own x_ button (unique id), value=score
 
 export interface FieldDef {
   key: string;

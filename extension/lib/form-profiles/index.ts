@@ -12,6 +12,14 @@ import { IDD_SERVICE_OUTCOME } from './standalone/idd-service-outcome';
 import { RECOVERY_PLAN_REVIEW } from './standalone/recovery-plan-review';
 import { SIRP_PSYCHOSOCIAL_REHAB } from './standalone/sirp-psychosocial-rehab';
 import { SIRP_SKILLS_TRAINING } from './standalone/sirp-skills-training';
+import { TKIDS_DELIVERED_SERVICES } from './standalone/tkids-delivered-services';
+import { ECI_28_DAY } from './standalone/eci-28-day';
+import { ECI_BATCHING } from './standalone/eci-batching';
+import { MEDICATIONS } from './standalone/medications';
+import { PLAN_RECOMMENDATIONS } from './standalone/plan-recommendations';
+import { DIAGNOSTIC_REVIEW } from './standalone/diagnostic-review';
+import { IDD_ONLY } from './standalone/idd-only';
+import { IDD_CASEMGT_SHORT } from './standalone/idd-casemgt-short';
 
 import { PSYCH_EVAL_MAIN } from './eval-subpages/psych-eval-main';
 import { EM_EPT_PATIENT_HISTORY } from './eval-subpages/em-ept-patient-history';
@@ -31,6 +39,14 @@ export const STANDALONE_PROFILES: FormProfile[] = [
   RECOVERY_PLAN_REVIEW,
   SIRP_PSYCHOSOCIAL_REHAB,
   SIRP_SKILLS_TRAINING,
+  TKIDS_DELIVERED_SERVICES,
+  ECI_28_DAY,
+  ECI_BATCHING,
+  MEDICATIONS,
+  PLAN_RECOMMENDATIONS,
+  DIAGNOSTIC_REVIEW,
+  IDD_ONLY,
+  IDD_CASEMGT_SHORT,
 ];
 
 // Order matters slightly for readability only — scoring is independent per

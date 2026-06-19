@@ -26,6 +26,7 @@ const PHQ9_ADULT_FIELDS: FieldDef[] = [
     labels: ['how difficult these problems made it'],
     options: ['Not difficult at all', 'Somewhat difficult', 'Very difficult', 'Extremely difficult'],
   },
+  { key: 'phqDate', type: 'date', labels: ["Today's Date"] },
 ];
 
 // PHQ-9 ADOLESCENT differs in wording/order and adds Yes/No screening questions.
@@ -57,6 +58,13 @@ const PHQ9_ADOLESCENT_FIELDS: FieldDef[] = [
     labels: ['serious thoughts about ending your life'],
     options: ['Yes', 'No'],
   },
+  {
+    key: 'phqEverAttempt',
+    type: 'radio',
+    labels: ['tried to kill yourself or made a suicide attempt'],
+    options: ['Yes', 'No'],
+  },
+  { key: 'phqDate', type: 'date', labels: ["Today's Date"] },
 ];
 
 export const PHQ9_ADULT: FormProfile = {
@@ -86,8 +94,33 @@ export const PHQ9_ADOLESCENT: FormProfile = {
   fields: PHQ9_ADOLESCENT_FIELDS,
 };
 
-// C-SSRS not yet authored — needs a live DOM capture of its scored widgets.
-// Left with empty fields so the UI flags it "complete manually" until then.
+// C-SSRS fields from live DOM (cbh3). x_ buttons with values "Y"/"N" (one shared
+// id per question, two buttons per row). The engine's findScoredButton accepts
+// any non-empty value string, so scored-widget type works for Y/N grids too.
+const CSSRS_FIELDS: FieldDef[] = [
+  {
+    key: 'sourceOfHistory',
+    type: 'radio',
+    labels: ['Source of History'],
+    options: [
+      'Patient',
+      'Patient / LAR / Parent',
+      'Patient / Other Family',
+      'Patient / Other Advocate',
+      'Patient / Other Mental Health Provider',
+      'Patient / Records Review (Summarize in HPA)',
+    ],
+  },
+  { key: 'wishedDead', type: 'scored-widget', labels: ['wished you were dead'] },
+  { key: 'thoughtsKillingSelf', type: 'scored-widget', labels: ['thoughts of killing yourself'] },
+  { key: 'thinkingHowKillSelf', type: 'scored-widget', labels: ['how you might kill yourself'] },
+  { key: 'intentionToAct', type: 'scored-widget', labels: ['intention of acting on them'] },
+  { key: 'detailsAndIntent', type: 'scored-widget', labels: ['details of how to kill yourself'] },
+  { key: 'suicidalBehavior', type: 'scored-widget', labels: ['prepared to do anything', 'done anything, started to do anything'] },
+  { key: 'homicidalIdeation', type: 'scored-widget', labels: ['thoughts of killing someone else'] },
+  { key: 'homicidalPlan', type: 'scored-widget', labels: ['details of how to kill them'] },
+];
+
 export const SUICIDE_HOMICIDE_RISK: FormProfile = {
   id: 'Suicide/Homicide Risk',
   displayName: 'Suicide/Homicide Risk (C-SSRS)',
@@ -97,5 +130,5 @@ export const SUICIDE_HOMICIDE_RISK: FormProfile = {
     supporting: ['Risk Assessment'],
     categoryIds: [27078],
   },
-  fields: [],
+  fields: CSSRS_FIELDS,
 };

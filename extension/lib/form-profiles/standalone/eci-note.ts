@@ -1,8 +1,7 @@
 import type { FormProfile } from '../types';
 
 // From screenshots (docs/FORM-AUTOFILL-ARCHITECTURE.md §1.2) — needs live
-// fingerprint verification (task 8.1). nextVisitDate is a date picker and is
-// out of scope for this iteration (design.md Non-Goals).
+// fingerprint verification (task 8.1).
 export const ECI_NOTE: FormProfile = {
   id: 'ECI Service Delivery Note',
   displayName: 'ECI Progress Note',
@@ -17,5 +16,6 @@ export const ECI_NOTE: FormProfile = {
     { key: 'jointPlanningReflection', type: 'textarea', labels: ['Joint Planning', 'Reflection'] },
     { key: 'observationPractice', type: 'textarea', labels: ['Observation and Practice'] },
     { key: 'reflectionFeedback', type: 'textarea', labels: ['Reflection/Feedback'] },
+    { key: 'nextVisitDate', type: 'date', labels: ['Next visit is scheduled'] },
   ],
 };

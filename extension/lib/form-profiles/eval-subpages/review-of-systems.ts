@@ -15,12 +15,17 @@ export const REVIEW_OF_SYSTEMS: FormProfile = {
       key: 'rosFindings',
       type: 'checkbox-group',
       labels: ['REVIEW OF SYSTEMS'],
+      // Live system list (cbh3): the 12 checkboxes on the page.
       options: [
-        'Constitutional', 'Eyes', 'ENT', 'Cardiovascular', 'Respiratory',
-        'Gastrointestinal', 'Genitourinary', 'Musculoskeletal', 'Skin',
-        'Neurological', 'Psychiatric',
+        'Constitutional', 'Eyes', 'Ears/Nose/Throat', 'Cardiovascular',
+        'Respiratory', 'Gastrointestinal', 'Genitourinary', 'Musculoskeletal',
+        'Integumentary', 'Neurological', 'Endocrine', 'Hematologic/Lymphatic',
       ],
     },
-    { key: 'rosComments', type: 'textarea', labels: ['ROS Comments', 'Systems Review Comments'] },
+    {
+      key: 'rosComments',
+      type: 'textarea',
+      labels: ['Current Review of Systems and Changes Noted', 'ROS Comments'],
+    },
   ],
 };
