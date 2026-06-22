@@ -41,13 +41,7 @@ const TOBACCO_FIELDS: FieldDef[] = [
     labels: ['Tobacco cessation education'],
     options: ['Yes', 'No'],
   },
-  {
-    key: 'illegalDrugUse',
-    type: 'radio',
-    labels: ['illegal drugs or prescription drugs'],
-    options: ['Yes', 'No'],
-  },
-  { key: 'illegalDrugList', type: 'plain-textarea', labels: ['If yes, list'] },
+
   { key: 'substanceUseComments', type: 'textarea', labels: ['Substance Use and Tobacco Screening Comments'] },
 ];
 
@@ -78,22 +72,39 @@ export const SUBSTANCE_USE_ADULT: FormProfile = {
   fields: [
     ...AUDIT_C_FIELDS,
     ...TOBACCO_FIELDS,
+    {
+      key: 'illegalDrugUse',
+      type: 'radio',
+      labels: ['illegal drugs or prescription drugs'],
+      options: ['Yes', 'No'],
+    },
+    { 
+      key: 'illegalDrugList', 
+      type: 'textarea', 
+      labels: ['Describe History of Substance Use', 'If yes, list'] 
+    },
+    {
+      key: 'substanceUseDisposition',
+      type: 'radio',
+      labels: ['Substance Use Screening Disposition'],
+      options: ['Screening indicates a need for further assessment', 'Negative screening - no further action necessary'],
+    },
   ],
 };
 
 // CRAFFT (live cbh3 DOM): Part A = 3 Yes/No radios + a summary Yes/No; Part B =
 // 6 scored widgets (shared id per question, values 1=Yes / 0=No) → 'scored-widget'.
 const CRAFFT_FIELDS: FieldDef[] = [
-  { key: 'crafftA1', type: 'radio', labels: ['Drink any alcohol'], options: ['Yes', 'No'] },
-  { key: 'crafftA2', type: 'radio', labels: ['marijuana or hashish'], options: ['Yes', 'No'] },
-  { key: 'crafftA3', type: 'radio', labels: ['anything else to get high'], options: ['Yes', 'No'] },
-  { key: 'crafftAAnyYes', type: 'radio', labels: ["answer 'Yes' to any questions in Part A"], options: ['Yes', 'No'] },
-  { key: 'crafftB1', type: 'scored-widget', labels: ['ridden in a car driven by someone'] },
-  { key: 'crafftB2', type: 'scored-widget', labels: ['use alcohol or drugs to relax'] },
-  { key: 'crafftB3', type: 'scored-widget', labels: ['while you are by yourself'] },
-  { key: 'crafftB4', type: 'scored-widget', labels: ['forget things you did while using'] },
-  { key: 'crafftB5', type: 'scored-widget', labels: ['tell you that you should cut down'] },
-  { key: 'crafftB6', type: 'scored-widget', labels: ['gotten in trouble while you were using'] },
+  { key: 'crafftA1', type: 'radio', labels: ['1. Drink any alcohol (more than a few sips)?', 'Drink any alcohol'], options: ['Yes', 'No'] },
+  { key: 'crafftA2', type: 'radio', labels: ['2. Smoke any marijuana or hashish?', 'marijuana or hashish'], options: ['Yes', 'No'] },
+  { key: 'crafftA3', type: 'radio', labels: ['3. Use anything else to get high?', 'anything else to get high'], options: ['Yes', 'No'] },
+  { key: 'crafftAAnyYes', type: 'radio', labels: ["Did the individual answer 'Yes' to any questions in Part A?", "answer 'Yes' to any questions in Part A"], options: ['Yes', 'No'] },
+  { key: 'crafftB1', type: 'scored-widget', labels: ['1. Have you ever ridden in a car driven by someone (including yourself) who was "high" or had been using alcohol or drugs?', 'ridden in a car driven by someone'], options: ['1', '0'] },
+  { key: 'crafftB2', type: 'scored-widget', labels: ['2. Do you ever use alcohol or drugs to relax, feel better or fit in?', 'use alcohol or drugs to relax'], options: ['1', '0'] },
+  { key: 'crafftB3', type: 'scored-widget', labels: ['3. Do you ever use alcohol or drugs while you are by yourself, or alone?', 'while you are by yourself'], options: ['1', '0'] },
+  { key: 'crafftB4', type: 'scored-widget', labels: ['4. Do you ever forget things you did while using alcohol or drugs?', 'forget things you did while using'], options: ['1', '0'] },
+  { key: 'crafftB5', type: 'scored-widget', labels: ['5. Do your family or friends ever tell you that you should cut down on your drinking or drug use?', 'tell you that you should cut down'], options: ['1', '0'] },
+  { key: 'crafftB6', type: 'scored-widget', labels: ['6. Have you ever gotten in trouble while you were using alcohol or drugs?', 'gotten in trouble while you were using'], options: ['1', '0'] },
 ];
 
 export const SUBSTANCE_USE_CHILD: FormProfile = {

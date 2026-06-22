@@ -21,6 +21,8 @@ export const MSE: FormProfile = {
       labels: [sig.label],
       options: sig.options,
     })),
-    { key: 'mseComments', type: 'textarea', labels: ['MSE Comments', 'Mental Status Comments'] },
+    { key: 'mseMuscleStrength', type: 'radio', labels: ['Muscle Strength / Tone'], options: ['WNL', 'Atrophy', 'Abnormal Movements'] },
+    { key: 'mseGaitStation', type: 'radio', labels: ['Gait and Station'], options: ['No Difficulty', 'Restlessness', 'Staggered', 'Shuffling', 'Unstable'] },
+    { key: 'mseComments', type: 'textarea', labels: ['MSE Comments', 'Mental Status Comments', 'Mental Status Exam Comments'] },
   ],
 };

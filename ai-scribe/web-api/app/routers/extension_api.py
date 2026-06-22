@@ -638,12 +638,13 @@ def _label_transcript(raw_transcript: str, clinician_name: str) -> list[dict]:
     service = generative_ai_services[0]
 
     system_prompt = (
-        "You are a clinical transcript labeler. "
-        f"The clinician in this conversation is named '{clinician_name}'. "
-        "The other party is the Patient. "
-        "Split the transcript into turns and label each turn with the speaker. "
-        f"Use '{clinician_name}' for the clinician and 'Patient' for the patient. "
-        "If a turn is ambiguous, use 'Speaker 1' or 'Speaker 2'. "
+        "You are an expert clinical transcript labeler. "
+        "You will be given a raw transcript that may have INCORRECT or missing speaker labels (e.g. it might label a husband as 'Patient', or merge two speakers together). "
+        f"The clinician is named '{clinician_name}'. The primary patient is 'Patient'. "
+        "There are often family members speaking too. Correct the speaker labels based on CONTEXT CLUES. "
+        "For example, if someone says 'your wife' or calls the patient 'hon', that is a family member. Label them descriptively (e.g., 'Husband', 'Mother'). "
+        "Do not use 'Unidentified Speaker' unless you have absolutely no context clues. "
+        "Split the transcript into turns ONLY when the speaker actually changes. "
         "Return ONLY a JSON array: [{\"speaker\": \"...\", \"text\": \"...\"}]"
     )
 
@@ -1090,9 +1091,9 @@ FORM_SCHEMAS: dict[str, dict] = {
         "recommendations": "Recommendations, referrals, or plan discussed during this contact. Summarize from the transcript.",
     },
     "Adult Substance Use": {
-        "auditFrequency": "AUDIT-C Q1: how often do you have a drink containing alcohol. Score 0-4 (0=Never, 1=Monthly or less, 2=2-4 times a month, 3=2-3 times a week, 4=4+ times a week). Empty string if not assessable.",
-        "auditTypicalDay": "AUDIT-C Q2: how many standard drinks on a typical drinking day. Score 0-4 (0=1-2, 1=3-4, 2=5-6, 3=7-9, 4=10+). Empty string if not assessable.",
-        "auditBinge": "AUDIT-C Q3: how often six or more drinks on one occasion. Score 0-4 (0=Never, 1=Less than monthly, 2=Monthly, 3=Weekly, 4=Daily or almost daily). Empty string if not assessable.",
+        "auditFrequency": "AUDIT-C Q1: how often do you have a drink containing alcohol. Output ONLY the integer score: 0 (Never), 1 (Monthly or less), 2 (2-4 times a month), 3 (2-3 times a week), or 4 (4+ times a week). Empty string if not assessable.",
+        "auditTypicalDay": "AUDIT-C Q2: how many standard drinks on a typical drinking day. Output ONLY the integer score: 0 (1-2), 1 (3-4), 2 (5-6), 3 (7-9), or 4 (10+). Empty string if not assessable.",
+        "auditBinge": "AUDIT-C Q3: how often six or more drinks on one occasion. Output ONLY the integer score: 0 (Never), 1 (Less than monthly), 2 (Monthly), 3 (Weekly), or 4 (Daily or almost daily). Empty string if not assessable.",
         "auditResult": "Whether the total AUDIT-C score is positive or negative for unhealthy alcohol use. One of: Positive, Negative. Empty string if not assessable.",
         "tobaccoStatus": "Tobacco use status. One of: Current User, Never Used, Past User. Empty string if not stated.",
         "tobaccoProducts": "Tobacco products the patient uses, comma-separated, chosen only from: Bidis, Chewing Tobacco, Cigars / Cigarillos, Cigarettes, Vaping, Hookah, Kreteks, Pipe, Snuff. Empty string if none/not stated.",
@@ -1102,28 +1103,45 @@ FORM_SCHEMAS: dict[str, dict] = {
         "tobaccoCessationEducation": "Tobacco cessation education/counseling provided. One of: Yes, No. Empty string if not stated.",
         "illegalDrugUse": "Has the patient used illegal drugs or prescription drugs for non-medical reasons within the last month. One of: Yes, No. Empty string if not stated.",
         "illegalDrugList": "If illegal/non-medical drug use was reported, list the substances. Empty string otherwise.",
+        "substanceUseDisposition": "Disposition based on screening results. One of: Screening indicates a need for further assessment, Negative screening - no further action necessary. Empty string if not assessable.",
         "substanceUseComments": "Narrative substance use and tobacco screening comments. Empty string if nothing relevant.",
     },
+    "Trauma History": {
+        "traumaSexualAbuse": "Patient reports history of sexual abuse. One of: Yes, No. Empty if unmentioned.",
+        "traumaPhysicalAbuse": "Patient reports history of physical abuse. One of: Yes, No. Empty if unmentioned.",
+        "traumaEmotionalAbuse": "Patient reports history of emotional abuse. One of: Yes, No. Empty if unmentioned.",
+        "traumaHistoryNeglect": "Patient reports history of neglect. One of: Yes, No. Empty if unmentioned.",
+        "traumaMilitary": "Patient reports military trauma. One of: Yes, No. Empty if unmentioned.",
+        "traumaWar": "Patient reports being affected by war. One of: Yes, No. Empty if unmentioned.",
+        "traumaTerrorism": "Patient reports being affected by terrorism. One of: Yes, No. Empty if unmentioned.",
+        "traumaNaturalDisaster": "Patient reports being affected by a natural disaster. One of: Yes, No. Empty if unmentioned.",
+        "traumaWitnessFamilyViolence": "Patient reports witnessing family violence. One of: Yes, No. Empty if unmentioned.",
+        "traumaWitnessCommunityViolence": "Patient reports witnessing community violence. One of: Yes, No. Empty if unmentioned.",
+        "traumaVictimCriminalActivity": "Patient reports being a witness or victim of criminal activity. One of: Yes, No. Empty if unmentioned.",
+        "traumaSignificantIssues": "Are there significant issues as a result of reported trauma impacting current presenting problem? One of: Yes, Denies. Empty if unmentioned.",
+        "traumaHistory": "Narrative details regarding trauma, abuse, neglect, or exploitation history. Empty if nothing reported.",
+    },
+    "Relationships/Home": {
+        "interpersonalRelationships": "Overall quality of interpersonal relationships, including challenges, living situation, and concerns. Summarize from transcript.",
+    },
     "Child Substance Use": {
-        "crafftA1": "CRAFFT Part A Q1: in the past 12 months, drank any alcohol (more than a few sips). One of: Yes, No. Empty string if not assessable.",
-        "crafftA2": "CRAFFT Part A Q2: smoked any marijuana or hashish. One of: Yes, No. Empty string if not assessable.",
-        "crafftA3": "CRAFFT Part A Q3: used anything else to get high. One of: Yes, No. Empty string if not assessable.",
-        "crafftAAnyYes": "Did the individual answer Yes to any Part A question. One of: Yes, No. Empty string if not assessable.",
-        "crafftB1": "CRAFFT Part B Q1: ridden in a car driven by someone (including self) who was high or using alcohol/drugs. Score 1 for Yes, 0 for No. Empty string if not assessable.",
-        "crafftB2": "CRAFFT Part B Q2: use alcohol or drugs to relax, feel better, or fit in. Score 1 for Yes, 0 for No. Empty string if not assessable.",
-        "crafftB3": "CRAFFT Part B Q3: use alcohol or drugs while by yourself or alone. Score 1 for Yes, 0 for No. Empty string if not assessable.",
-        "crafftB4": "CRAFFT Part B Q4: forget things you did while using alcohol or drugs. Score 1 for Yes, 0 for No. Empty string if not assessable.",
-        "crafftB5": "CRAFFT Part B Q5: family or friends told you to cut down on drinking/drug use. Score 1 for Yes, 0 for No. Empty string if not assessable.",
-        "crafftB6": "CRAFFT Part B Q6: gotten in trouble while using alcohol or drugs. Score 1 for Yes, 0 for No. Empty string if not assessable.",
-        "tobaccoStatus": "Tobacco use status. One of: Current User, Never Used, Past User. Empty string if not stated.",
-        "tobaccoProducts": "Tobacco products the patient uses, comma-separated, chosen only from: Bidis, Chewing Tobacco, Cigars / Cigarillos, Cigarettes, Vaping, Hookah, Kreteks, Pipe, Snuff. Empty string if none/not stated.",
-        "tobaccoFrequency": "How frequently the patient uses tobacco per day. One of: 1-5 times per day, 5-10 times per day, 10-15 times per day, 15-20 times per day, 20 or more times per day. Empty string if not stated.",
-        "tobaccoWaking": "How soon within waking the patient uses tobacco. One of: Less than 30 minutes, Greater than 30 minutes. Empty string if not stated.",
-        "tobaccoReadyQuit": "How ready the patient is to quit tobacco. One of: In the next 30 days, In the next 6 months, Eventually, Not at all. Empty string if not stated.",
-        "tobaccoCessationEducation": "Tobacco cessation education/counseling provided. One of: Yes, No. Empty string if not stated.",
-        "illegalDrugUse": "Has the patient used illegal drugs or prescription drugs for non-medical reasons within the last month. One of: Yes, No. Empty string if not stated.",
-        "illegalDrugList": "If illegal/non-medical drug use was reported, list the substances. Empty string otherwise.",
-        "substanceUseComments": "Narrative substance use and tobacco screening comments/referrals. Empty string if nothing relevant.",
+        "crafftA1": "CRAFFT A1 — alcohol use past 12 months. 'Denies alcohol use' = No. One of: Yes, No. Empty if unmentioned.",
+        "crafftA2": "CRAFFT A2 — marijuana/hashish past 12 months. 'Denies marijuana/drug use' = No. One of: Yes, No. Empty if unmentioned.",
+        "crafftA3": "CRAFFT A3 — used anything else to get high past 12 months. 'Denies recreational/illegal drug use' = No. One of: Yes, No. Empty if unmentioned.",
+        "crafftAAnyYes": "Did patient answer Yes to any Part A question? If all A1-A3 are No or denied, output No. One of: Yes, No. Empty if Part A unaddressed.",
+        "crafftB1": "CRAFFT B1 — ridden in car with high/impaired driver. 'Denies' or general denial of all CRAFFT B items = 0. One of: 1, 0. Empty if unmentioned.",
+        "crafftB2": "CRAFFT B2 — use alcohol/drugs to relax/fit in. 'Denies using alcohol or drugs to relax, feel better, fit in' = 0. One of: 1, 0. Empty if unmentioned.",
+        "crafftB3": "CRAFFT B3 — use alcohol/drugs while alone. 'Denies using alcohol or drugs when alone' = 0. One of: 1, 0. Empty if unmentioned.",
+        "crafftB4": "CRAFFT B4 — blackouts/forgetting events. 'Denies blackouts, memory loss, forgetting events' = 0. One of: 1, 0. Empty if unmentioned.",
+        "crafftB5": "CRAFFT B5 — family/friends said cut down. 'Denies family or friends expressing concern' = 0. One of: 1, 0. Empty if unmentioned.",
+        "crafftB6": "CRAFFT B6 — legal/school/work/social trouble. 'Denies legal, school, work, social problems related to substance use' = 0. One of: 1, 0. Empty if unmentioned.",
+        "tobaccoStatus": "Tobacco use. 'Denies tobacco/nicotine use' = Never Used. One of: Current User, Never Used, Past User. Empty if not mentioned.",
+        "tobaccoProducts": "Tobacco products explicitly named. From: Bidis, Chewing Tobacco, Cigars / Cigarillos, Cigarettes, Vaping, Hookah, Kreteks, Pipe, Snuff. Empty if none/denied.",
+        "tobaccoFrequency": "Tobacco frequency per day if stated. One of: 1-5 times per day, 5-10 times per day, 10-15 times per day, 15-20 times per day, 20 or more times per day. Empty if not stated.",
+        "tobaccoWaking": "Time to first tobacco after waking if stated. One of: Less than 30 minutes, Greater than 30 minutes. Empty if not stated.",
+        "tobaccoReadyQuit": "Readiness to quit tobacco if stated. One of: In the next 30 days, In the next 6 months, Eventually, Not at all. Empty if not stated.",
+        "tobaccoCessationEducation": "Tobacco cessation counseling provided. One of: Yes, No. Empty if not stated.",
+        "substanceUseComments": "Any additional substance use info NOT captured in the above fields. Do not repeat denials already mapped to CRAFFT/tobacco fields. Empty if nothing new.",
     },
     "BMI Eval": {
         "bmiNotMeasuredReason": "Reason BMI was not measured, if applicable. One of: Immobile, Measurement Device Capacity Exceeded, Refused. Empty string if BMI was measured or not stated.",
@@ -1153,6 +1171,7 @@ FORM_SCHEMAS: dict[str, dict] = {
         "phqPsychomotor": "Item: Moving/speaking slowly, or being fidgety/restless. Score 0-3, or empty string if not assessable.",
         "phqSelfHarm": "Item: Thoughts of being better off dead or of self-harm. Score 0-3, or empty string if not assessable.",
         "phqDifficulty": "How difficult these problems made daily functioning. One of: Not difficult at all, Somewhat difficult, Very difficult, Extremely difficult. Empty string if not assessable.",
+        "phqSeverityGuide": "Determine the total PHQ-9 score from the note (or sum the 9 items if they are listed individually). Based on that total score: If 1-4, output exactly '1-4 Minimal Depression'. If 5-9, output exactly '5-9 Mild Depression'. If 10-14, output exactly '10-14 Moderate Depression'. If 15-19, output exactly '15-19 Moderately Severe Depression'. If 20-27, output exactly '20-27 Severe Depression'. Otherwise output an empty string.",
         "phqDate": "Today's date (the date the screening was completed), in YYYY-MM-DD format. Use today's date if a screening occurred; empty string otherwise.",
     },
     "PHQ-9 Adolescent": {
@@ -1169,6 +1188,7 @@ FORM_SCHEMAS: dict[str, dict] = {
         "phqDifficulty": "How difficult these problems made daily functioning. One of: Not difficult at all, Somewhat difficult, Very difficult, Extremely difficult. Empty string if not assessable.",
         "phqSuicidalPastMonth": "In the past month, had serious thoughts about ending your life. One of: Yes, No. Empty string if not assessable.",
         "phqEverAttempt": "Have you EVER, in your whole life, tried to kill yourself or made a suicide attempt. One of: Yes, No. Empty string if not assessable.",
+        "phqSeverityGuide": "Determine the total PHQ-9 score. If 0-4, output exactly '0-4 No or Minimal Depression'. If 5-9, output exactly '5-9 Mild Depression'. If 10-14, output exactly '10-14 Moderate Depression'. If 15-19, output exactly '15-19 Moderately Severe Depression'. If 20-27, output exactly 'Severe Depression'. Empty string if not assessable.",
         "phqDate": "Today's date (the date the screening was completed), in YYYY-MM-DD format. Use today's date if a screening occurred; empty string otherwise.",
     },
     "Suicide/Homicide Risk": {
@@ -1214,6 +1234,11 @@ FORM_SCHEMAS: dict[str, dict] = {
             "C-SSRS Homicide Item 2: Has the patient started to work out the details of how to kill "
             "someone else? Return Y if endorsed, N if denied, or empty string if not discussed."
         ),
+        "riskAssessmentComments": (
+            "Narrative clinical summary for the Suicide / Homicide Risk Assessment Comments field. "
+            "Summarize the patient's overall risk level, protective factors, clinical impression, and "
+            "any relevant context from the encounter. Empty string if no risk discussion took place."
+        ),
     },
 }
 
@@ -1258,12 +1283,20 @@ def _generate_structured_fields(schema: dict, subject_label: str, subject_value:
         "Only leave a field as an empty string when the visit genuinely contains nothing relevant "
         "to it. Do not fabricate specific facts such as names, dates, or exact numbers that have "
         "no basis in the conversation.\n"
+        "IMPORTANT — Denial language IS a direct answer, not an absence of information. "
+        "If the note says 'denies X', 'no history of X', 'patient reports no X', or similar, "
+        "that IS an answer: for Yes/No fields output 'No'; for binary 1/0 scored fields output '0'. "
+        "Do NOT leave these empty just because the patient's answer was negative.\n"
         "For symptom-frequency rating fields (described as 'Score 0-3'), INFER the score from how "
         "the patient describes that symptom over the period — even if it was not asked as a formal "
         "questionnaire item: 'not at all'/denies → 0; 'a few days'/'several days'/'sometimes' → 1; "
         "'more than half the days'/'often'/'a lot' → 2; 'nearly every day'/'almost always'/"
         "'constantly' → 3. Use an empty string only when the patient gave no indication about that "
         "symptom.\n"
+        "For binary scored fields (described as 'Score 1 for Yes, 0 for No' or 'One of: 1, 0'), "
+        "output exactly '1' or '0' — never 'Yes'/'No' for these fields. "
+        "If the note says the patient denies the activity, output '0'. "
+        "Empty string only if the topic is entirely unmentioned in the note.\n"
         "For date fields, return the date in YYYY-MM-DD format. Only fill a date when it is "
         "explicitly stated or clearly derivable; resolve relative references (e.g. 'next "
         "Tuesday') against TODAY'S DATE given below. Empty string if no date applies.\n"
@@ -1417,9 +1450,14 @@ _MSE_FIELDS = {
     "insight": "Insight, one of: Excellent, Good, Fair, Poor, Grossly impaired.",
     "judgement": "Judgement, one of: Excellent, Good, Fair, Poor, Grossly impaired.",
     "language": "Language, one of: Excellent, Good, Fair, Poor, Grossly impaired.",
-    "cognitiveAttention": "Cognitive attention/concentration, comma-separated from: No Gross Deficits, Concrete.",
-    "psychomotor": "Psychomotor activity, comma-separated from: Normal, Restless, Retardation, Fidgety, Hyperactive/Intrusive.",
-    "musculoskeletal": "Musculoskeletal exam findings, if mentioned. Empty string if not assessed.",
+    "cognitiveAttention": "Cognitive attention/concentration, comma-separated from: No Gross Deficits, Concentration Problems, Concrete, Abstract, Appropriate for Tested IQ, Inattentive / Easily Distracted, Limited Attention Span, Not formally examined.",
+    "psychomotor": "Psychomotor activity, comma-separated from: Normal, Restless, Retardation, Fidgety, Hyperactive/Instrusive.",
+    "memory": "Memory examination status. One of: Examined, Not examined, Unable to Assess.",
+    "memoryImmediate": "Immediate memory, one of: Good, Fair, Impaired.",
+    "memoryRecent": "Recent memory, one of: Good, Fair, Impaired.",
+    "memoryPast": "Past memory, one of: Good, Fair, Impaired.",
+    "mseMuscleStrength": "Muscle Strength / Tone findings. One of: WNL, Atrophy, Abnormal Movements. Empty string if not assessable.",
+    "mseGaitStation": "Gait and Station findings. One of: No Difficulty, Restlessness, Staggered, Shuffling, Unstable. Empty string if not assessable.",
     "mseComments": "Additional free-text mental status exam comments not captured by the categories above.",
 }
 
@@ -1438,12 +1476,50 @@ EVALUATION_SCHEMAS: dict[str, dict] = {
         "sourceOfInformation": "Source of the information for this evaluation (e.g., Client self-report, Parent/Guardian, Medical records).",
         "presentingProblems": "The presenting problem(s) / chief complaint that brought the client in for this evaluation.",
         "familyHistory": "Relevant family psychiatric and/or medical history.",
+        "swallowingForeignObjects": "Does the consumer have a history of swallowing foreign objects? One of: Yes, No. Empty string if not stated.",
+        "foreignObjectsDetail": "If the consumer has a history of swallowing foreign objects, what foreign objects have been swallowed? Empty string if No or not stated.",
         "traumaHistory": "History of trauma, abuse, or neglect, if any was disclosed. Empty string if none disclosed.",
         "tobaccoStatus": "Tobacco use status (e.g., Never, Former, Current).",
         "substanceUseComments": "Narrative comments on substance use history (alcohol, drugs), excluding tobacco.",
+        "riskAssessmentComments": (
+            "Narrative clinical summary for the Suicide / Homicide Risk Assessment Comments field. "
+            "Summarize the patient's overall suicidal/homicidal risk level, protective factors, clinical "
+            "impression, and any relevant context. Empty string if no risk discussion took place."
+        ),
+        # Physical Health Assessment sub-page fields
+        "hasMedicalConditions": "Does the individual report present or a history of any medical conditions? One of: Yes, No. Empty string if not stated.",
+        "medicalConditionsDetail": "If yes, describe all reported medical conditions and current related medications. Empty string if none reported.",
+        "physicalExamPast12Months": "Has the consumer had a physical exam in the past 12 months? One of: Yes, No, Unknown. Empty string if not stated.",
+        "pregnancyEvalRequired": "Does the consumer require evaluation for pregnancy or prenatal care? One of: Yes, No. Empty string if not stated or not applicable.",
+        "allergiesList": "List of allergies including medication allergies. Empty string if none stated.",
+        "specialPrecautions": "Any special precautions noted for this consumer. Empty string if none stated.",
+        "personalPhysicianName": "Name of the consumer's personal physician or primary care provider. Empty string if not stated.",
+        "physicalHealthReferrals": "Any referrals generated from the physical health screening results. Empty string if none.",
+        "rosFindings": (
+            "Comma-separated list of body systems with pertinent positive or negative findings, "
+            "chosen only from: Constitutional, Eyes, Ears/Nose/Throat, Cardiovascular, Respiratory, "
+            "Gastrointestinal, Genitourinary, Musculoskeletal, Integumentary, Neurological, Endocrine, "
+            "Hematologic/Lymphatic. Empty string if no systems were reviewed."
+        ),
+        "rosComments": "Narrative summary of current review of systems findings and any changes noted. Empty string if none.",
         **_MSE_FIELDS,
         **_ROS_FIELDS,
         **_MEDICAL_BMI_FIELDS,
+        # Medication Management sub-page fields
+        "medicationsList": "List of current medications discussed or prescribed.",
+        "vitalSignsReviewed": "Were the listed vital signs and BMI recorded and reviewed? One of: Yes, No, N/A. Empty string if not stated.",
+        "clientAge": "Client's age as an integer string. MUST be an empty string if not explicitly mentioned in the transcript (do not guess or calculate).",
+        "pdmpReviewed": "PDMP Database Reviewed. One of: Yes, No, N/A. Empty string if not stated.",
+        "preExistingMedsReviewed": "Pre-Existing Medications for Medication Reconciliation Reviewed this Visit. One of: Yes, No. Empty string if not stated.",
+        "labOrders": "Lab Orders selected. One of: Check Next Visit, See Lab Requisition Today's Date. Empty string if none.",
+        # Plan / Recommendations (Psych Eval) sub-page fields
+        "problem1": "The first problem identified in the plan. Empty string if none.",
+        "status1": "Status of the first problem. Empty string if none.",
+        "plan1": "Plan/recommendation for the first problem. Empty string if none.",
+        "treatmentPlanComments": "Overall treatment plan comments. Empty string if nothing relevant.",
+        "referredTo": "Referrals made, comma-separated, chosen only from: Skills Training, Counseling, General Physician. Empty string if none.",
+        "returnTo": "Who the patient should return to, comma-separated, chosen only from: Nurse, NP, PA, Doctor, N/A - Discharged. Empty string if not stated.",
+        "returnInWeeks": "Return interval in weeks (number). Empty string if not stated.",
     },
     "em-ept": {
         "historySource": "Source of the patient history (e.g., Patient, Parent/Guardian).",
@@ -1471,6 +1547,24 @@ FORM_SCHEMAS["E&M EPT - Patient History"] = {
     "chiefComplaint": "The chief complaint / reason for this visit. Summarize from the transcript.",
     "historyPresentIllness": "History of present illness (HPI) — a narrative of the current complaint and its course. Summarize from the transcript.",
     "riskAssessmentSummary": "Summary of suicidal/homicidal ideation risk as assessed this visit. Summarize risk level, protective factors, and clinical impression. Empty string if not discussed.",
+}
+
+FORM_SCHEMAS["Physical Health Assess"] = {
+    "hasMedicalConditions": "Does the individual report present or a history of any medical conditions? One of: Yes, No. Empty string if not stated.",
+    "medicalConditionsDetail": "If yes, describe all reported medical conditions and current related medications. Empty string if none reported.",
+    "physicalExamPast12Months": "Has the consumer had a physical exam in the past 12 months? One of: Yes, No, Unknown. Empty string if not stated.",
+    "pregnancyEvalRequired": "Does the consumer require evaluation for pregnancy or prenatal care? One of: Yes, No. Empty string if not stated or not applicable.",
+    "allergiesList": "List of allergies including medication allergies. Empty string if none stated.",
+    "specialPrecautions": "Any special precautions noted for this consumer (e.g., fall risk, dietary restrictions, medical alerts). Empty string if none stated.",
+    "personalPhysicianName": "Name of the consumer's personal physician or primary care provider. Empty string if not stated.",
+    "physicalHealthReferrals": "Any referrals generated from the physical health screening results. Empty string if none.",
+    "rosFindings": (
+        "Comma-separated list of body systems with pertinent positive or negative findings, "
+        "chosen only from: Constitutional, Eyes, Ears/Nose/Throat, Cardiovascular, Respiratory, "
+        "Gastrointestinal, Genitourinary, Musculoskeletal, Integumentary, Neurological, Endocrine, "
+        "Hematologic/Lymphatic. Empty string if no systems were reviewed."
+    ),
+    "rosComments": "Narrative summary of current review of systems findings and any changes noted. Empty string if none.",
 }
 
 

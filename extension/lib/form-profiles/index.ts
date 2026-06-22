@@ -26,10 +26,14 @@ import { EM_EPT_PATIENT_HISTORY } from './eval-subpages/em-ept-patient-history';
 import { MSE } from './eval-subpages/mse';
 import { REVIEW_OF_SYSTEMS } from './eval-subpages/review-of-systems';
 import { MEDICAL_CONDITIONS } from './eval-subpages/medical-conditions';
+import { PHYSICAL_HEALTH_ASSESS } from './eval-subpages/physical-health-assess';
 import { TRAUMA_HISTORY } from './eval-subpages/trauma-history';
 import { BMI_EVAL } from './eval-subpages/bmi-eval';
 import { PHQ9_ADULT, PHQ9_ADOLESCENT, SUICIDE_HOMICIDE_RISK } from './eval-subpages/scored-instruments';
 import { SUBSTANCE_USE_ADULT, SUBSTANCE_USE_CHILD } from './eval-subpages/substance-use';
+import { RELATIONSHIPS_HOME } from './eval-subpages/relationships-home';
+import { MEDICATION_MANAGEMENT } from './eval-subpages/medication-management';
+import { PSYCH_PLAN_RECOMMENDATIONS } from './eval-subpages/psych-plan-recommendations';
 
 export const STANDALONE_PROFILES: FormProfile[] = [
   DARP_NOTE,
@@ -58,13 +62,17 @@ export const EVAL_SUBPAGE_PROFILES: FormProfile[] = [
   MSE,
   REVIEW_OF_SYSTEMS,
   MEDICAL_CONDITIONS,
+  PHYSICAL_HEALTH_ASSESS,
   TRAUMA_HISTORY,
   BMI_EVAL,
-  PHQ9_ADOLESCENT,
   PHQ9_ADULT,
+  PHQ9_ADOLESCENT,
   SUICIDE_HOMICIDE_RISK,
   SUBSTANCE_USE_ADULT,
   SUBSTANCE_USE_CHILD,
+  RELATIONSHIPS_HOME,
+  MEDICATION_MANAGEMENT,
+  PSYCH_PLAN_RECOMMENDATIONS,
 ];
 
 export const ALL_PROFILES: FormProfile[] = [...STANDALONE_PROFILES, ...EVAL_SUBPAGE_PROFILES];

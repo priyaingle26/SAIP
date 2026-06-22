@@ -26,6 +26,18 @@ const PHQ9_ADULT_FIELDS: FieldDef[] = [
     labels: ['how difficult these problems made it'],
     options: ['Not difficult at all', 'Somewhat difficult', 'Very difficult', 'Extremely difficult'],
   },
+  {
+    key: 'phqSeverityGuide',
+    type: 'radio',
+    labels: ['Guide to depression severity'],
+    options: [
+      '1-4 Minimal Depression',
+      '5-9 Mild Depression',
+      '10-14 Moderate Depression',
+      '15-19 Moderately Severe Depression',
+      '20-27 Severe Depression',
+    ],
+  },
   { key: 'phqDate', type: 'date', labels: ["Today's Date"] },
 ];
 
@@ -64,6 +76,18 @@ const PHQ9_ADOLESCENT_FIELDS: FieldDef[] = [
     labels: ['tried to kill yourself or made a suicide attempt'],
     options: ['Yes', 'No'],
   },
+  {
+    key: 'phqSeverityGuide',
+    type: 'radio',
+    labels: ['Score Interpretation'],
+    options: [
+      '0-4 No or Minimal Depression',
+      '5-9 Mild Depression',
+      '10-14 Moderate Depression',
+      '15-19 Moderately Severe Depression',
+      'Severe Depression',
+    ],
+  },
   { key: 'phqDate', type: 'date', labels: ["Today's Date"] },
 ];
 
@@ -97,7 +121,7 @@ export const PHQ9_ADOLESCENT: FormProfile = {
 // C-SSRS fields from live DOM (cbh3). x_ buttons with values "Y"/"N" (one shared
 // id per question, two buttons per row). The engine's findScoredButton accepts
 // any non-empty value string, so scored-widget type works for Y/N grids too.
-const CSSRS_FIELDS: FieldDef[] = [
+export const CSSRS_FIELDS: FieldDef[] = [
   {
     key: 'sourceOfHistory',
     type: 'radio',
@@ -119,6 +143,11 @@ const CSSRS_FIELDS: FieldDef[] = [
   { key: 'suicidalBehavior', type: 'scored-widget', labels: ['prepared to do anything', 'done anything, started to do anything'] },
   { key: 'homicidalIdeation', type: 'scored-widget', labels: ['thoughts of killing someone else'] },
   { key: 'homicidalPlan', type: 'scored-widget', labels: ['details of how to kill them'] },
+  {
+    key: 'riskAssessmentComments',
+    type: 'textarea',
+    labels: ['Suicide / Homicide Risk Assessment Comments', 'Risk Assessment Comments', 'Homicide Risk Assessment Comments'],
+  },
 ];
 
 export const SUICIDE_HOMICIDE_RISK: FormProfile = {
