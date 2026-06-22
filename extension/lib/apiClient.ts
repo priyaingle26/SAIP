@@ -195,9 +195,11 @@ export async function checkStreamingStatus(): Promise<boolean> {
   }
 }
 
-// ─── Finalize a streaming session: upload webm blob + pre-streamed transcript ─
+// ─── Finalize a streaming session ─────────────────────────────────────────────
+// Preferred path: send sessionId (audio already uploaded as chunks).
+// Fallback path: send audioBlob (legacy single-blob upload).
 export async function finalizeStream(
-  audioBlob: Blob,
+  audioOrSessionId: Blob | string,
   transcript: string,
   encounterId?: string,
   patientId?: string,
@@ -205,8 +207,14 @@ export async function finalizeStream(
   try {
     const token = await getAuthToken();
     const form = new FormData();
-    form.append('audio', audioBlob, 'recording.webm');
     form.append('transcript', transcript);
+    if (typeof audioOrSessionId === 'string') {
+      // Chunked-upload path: reference pre-uploaded audio by session id
+      form.append('session_id', audioOrSessionId);
+    } else {
+      // Legacy blob path: attach full audio file
+      form.append('audio', audioOrSessionId, 'recording.webm');
+    }
     if (encounterId) form.append('encounter_id', encounterId);
     if (patientId) form.append('patient_id', patientId);
 
@@ -221,6 +229,20 @@ export async function finalizeStream(
     return { success: true, data };
   } catch (err) {
     return { success: false, error: String(err) };
+  }
+}
+
+// ─── Get a short-lived single-use ticket for the transcription WebSocket ─────
+// Keeps the long-lived bearer token out of WS URLs / server access logs.
+export async function getStreamTicket(): Promise<string | null> {
+  try {
+    const headers = await authHeaders();
+    const res = await fetch(SAIP_ENDPOINTS.streamTicket, { method: 'POST', headers });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return (data?.ticket as string) ?? null;
+  } catch {
+    return null;
   }
 }
 

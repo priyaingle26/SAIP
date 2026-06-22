@@ -2,11 +2,16 @@ import asyncio
 import base64
 import json
 import logging
+import os
+import pathlib
+import secrets
+import shutil
+import time
 from datetime import datetime, timezone
 from typing import Annotated
 import uuid
 
-from fastapi import APIRouter, UploadFile, Depends, HTTPException, Body, Form, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, File, UploadFile, Depends, HTTPException, Body, Form, Query, WebSocket, WebSocketDisconnect, Request
 from pydantic import BaseModel
 from sqlalchemy import select
 
@@ -18,6 +23,49 @@ from app.tasks.transcription import transcribe_audio
 from app.tasks.generation import generate_note
 
 logger = logging.getLogger(__name__)
+
+# =============================================================================
+# CHUNKED AUDIO UPLOAD — server-side helpers
+# =============================================================================
+
+def _chunk_dir(session_id: str) -> pathlib.Path:
+    base = pathlib.Path(settings.RECORDINGS_FOLDER) / "chunks" / session_id
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
+def _chunk_path(session_id: str, seq: int) -> pathlib.Path:
+    return _chunk_dir(session_id) / f"{seq:06d}.bin"
+
+
+def _assemble_chunks(session_id: str) -> bytes | None:
+    """Concatenate binary chunks in seq order. Returns None if no chunks exist."""
+    d = pathlib.Path(settings.RECORDINGS_FOLDER) / "chunks" / session_id
+    if not d.exists():
+        return None
+    files = sorted(d.glob("*.bin"), key=lambda p: int(p.stem))
+    if not files:
+        return None
+    data = bytearray()
+    for f in files:
+        data.extend(f.read_bytes())
+    return bytes(data)
+
+
+def _cleanup_chunks(session_id: str) -> None:
+    d = pathlib.Path(settings.RECORDINGS_FOLDER) / "chunks" / session_id
+    if d.exists():
+        shutil.rmtree(d, ignore_errors=True)
+
+
+# =============================================================================
+# SHORT-LIVED STREAM TICKETS — replace long-lived token in WS URL
+# =============================================================================
+
+# In-memory store: ticket -> (username, expires_at_unix). Single-use.
+# For multi-process deployments, replace with Redis.
+_stream_tickets: dict[str, tuple[str, float]] = {}
+
 
 router = APIRouter()
 
@@ -75,8 +123,6 @@ async def extension_login(request: LoginRequest) -> LoginResponse:
 def authenticate_bearer(authorization: str | None = None) -> WebAPISession:
     from fastapi import Header
     pass # we will use Depends to grab header
-
-from fastapi import Request
 
 async def get_current_session(request: Request) -> WebAPISession:
     authorization = request.headers.get("authorization")
@@ -154,6 +200,7 @@ async def ext_get_encounter(
     session: WebAPISession = Depends(get_current_session),
     database: db.DatabaseSession = Depends(db.get_database_session),
 ) -> ExtEncounter:
+    logger.info(f"AUDIT PHI_READ user={session.username!r} resource=encounter/{encounter_id!r}")
     from sqlalchemy.orm import selectinload
     enc = database.execute(
         select(db.Encounter)
@@ -274,36 +321,41 @@ async def extension_transcribe(
 # LIVE TRANSCRIPTION — WebSocket Proxy (tasks 2.1–2.4)
 # =============================================================================
 
-async def _relay_session(client_ws: WebSocket, openai_ws, manual_commit: bool = False) -> None:
+async def _relay_session(
+    client_ws: WebSocket,
+    openai_ws,
+    manual_commit: bool = False,
+    rotation_timeout: float | None = None,
+) -> str:
     """Bidirectional relay: extension PCM frames → OpenAI, OpenAI events → extension.
 
     Two modes:
+    * Server VAD (gpt-4o-transcribe, ``manual_commit=False``) — OpenAI segments audio
+      on natural silence, auto commit+clears buffer per turn.
+    * Manual commit (gpt-realtime-whisper, ``manual_commit=True``) — commit on a
+      fixed cadence, clear buffer each time to prevent token blow-up / 1006 drops.
 
-    * Server VAD (gpt-4o-transcribe, ``manual_commit=False``) — OpenAI detects
-      speech boundaries from natural silence and auto commit+clears the buffer per
-      turn. We just relay audio; no timer, no manual commit. This avoids mid-word
-      chopping (better accuracy) and buffer accumulation (no token explosion /
-      1006 drops).
-    * Manual commit (gpt-realtime-whisper, ``manual_commit=True``) — no server VAD,
-      so we commit on a fixed cadence to flush segments AND explicitly clear the
-      buffer after every commit so audio never accumulates across the session.
+    Returns:
+      "done"   — client sent stop signal; session is complete.
+      "rotate" — rotation_timeout elapsed and a clean VAD boundary was found;
+                 caller should open a new upstream connection and relay again.
     """
-    # 16-bit mono PCM @ 24 kHz → 48000 bytes/sec. OpenAI rejects commits with
-    # < 100 ms (4800 bytes) of audio, so only commit once enough has accumulated.
-    MIN_COMMIT_BYTES = 4800        # 100 ms — OpenAI's minimum buffer size
-    COMMIT_INTERVAL_S = 2.5        # cadence of live caption segments (manual mode)
+    MIN_COMMIT_BYTES = 4800    # 100 ms of 24 kHz PCM16 — OpenAI's minimum commit size
+    COMMIT_INTERVAL_S = 2.5   # cadence of live caption segments (manual-commit mode)
 
     stop_event = asyncio.Event()
-    pending = {"bytes": 0}         # bytes appended since the last commit
+    # Set by rotation timer; consumed by openai_to_client at the next completed boundary
+    rotate_flag: dict[str, bool] = {"pending": False}
+    # Set by openai_to_client when it finds a clean rotation seam; wakes client_to_openai
+    seam_reached: dict[str, bool] = {"value": False}
+    pending: dict[str, int] = {"bytes": 0}
+    last_completed_norm: dict[str, str] = {"text": ""}  # for dedup at seam
 
     async def _commit_if_ready() -> bool:
         if pending["bytes"] >= MIN_COMMIT_BYTES:
             pending["bytes"] = 0
             try:
                 await openai_ws.send(json.dumps({"type": "input_audio_buffer.commit"}))
-                # Clear so the next segment starts fresh — committing alone can leave
-                # the buffer accumulating in transcription sessions, which is the
-                # documented cause of token blow-up and abrupt 1006 disconnects.
                 await openai_ws.send(json.dumps({"type": "input_audio_buffer.clear"}))
                 return True
             except Exception:
@@ -313,13 +365,20 @@ async def _relay_session(client_ws: WebSocket, openai_ws, manual_commit: bool = 
     async def client_to_openai() -> None:
         try:
             while True:
+                if seam_reached["value"]:
+                    break  # rotation seam: stop sending to this upstream
                 msg = await client_ws.receive()
+                if seam_reached["value"]:
+                    break
                 if "bytes" in msg and msg["bytes"]:
                     audio_b64 = base64.b64encode(msg["bytes"]).decode()
-                    await openai_ws.send(json.dumps({
-                        "type": "input_audio_buffer.append",
-                        "audio": audio_b64,
-                    }))
+                    try:
+                        await openai_ws.send(json.dumps({
+                            "type": "input_audio_buffer.append",
+                            "audio": audio_b64,
+                        }))
+                    except Exception:
+                        break
                     pending["bytes"] += len(msg["bytes"])
                 elif "text" in msg and msg["text"]:
                     try:
@@ -333,8 +392,6 @@ async def _relay_session(client_ws: WebSocket, openai_ws, manual_commit: bool = 
         stop_event.set()
 
     async def periodic_commit() -> None:
-        # Manual mode only: commit every COMMIT_INTERVAL_S so whisper transcribes
-        # incrementally. Server-VAD mode never runs this.
         try:
             while not stop_event.is_set():
                 try:
@@ -365,30 +422,60 @@ async def _relay_session(client_ws: WebSocket, openai_ws, manual_commit: bool = 
                     )
                     logger.info(f"  completed text: {text!r}")
                     if text and text.strip():
-                        await client_ws.send_json({"type": "completed", "text": text})
+                        # Dedup: skip if this is an exact repeat of the seam utterance
+                        norm = " ".join(text.strip().lower().split())
+                        if norm != last_completed_norm["text"]:
+                            last_completed_norm["text"] = norm
+                            await client_ws.send_json({"type": "completed", "text": text})
+                    # Rotation: cut over at this clean VAD boundary if timer elapsed
+                    if rotate_flag["pending"] and not stop_event.is_set():
+                        seam_reached["value"] = True
+                        logger.info("Rotation seam reached; signaling upstream handoff")
+                        return
                 elif etype == "error":
                     logger.error(f"OpenAI WS Error: {json.dumps(event)}")
                     await client_ws.send_json({"type": "error", "message": event.get("error", {}).get("message", str(event))})
         except Exception as exc:
             logger.error(f"openai_to_client error: {exc}")
 
+    async def rotation_timer() -> None:
+        if rotation_timeout and rotation_timeout > 0:
+            await asyncio.sleep(rotation_timeout)
+            if not stop_event.is_set():
+                rotate_flag["pending"] = True
+                logger.info(f"Rotation timer elapsed ({rotation_timeout}s); pending at next seam")
+
     t1 = asyncio.create_task(client_to_openai())
     t2 = asyncio.create_task(openai_to_client())
-    # Timer only needed when there is no server VAD to segment audio for us.
     t3 = asyncio.create_task(periodic_commit()) if manual_commit else None
+    t4 = asyncio.create_task(rotation_timer())
 
-    await t1  # Wait for client to stop sending audio
-    if t3 is not None:
-        t3.cancel()
+    await t1  # Wait for client stop or seam_reached exit
+
+    for t in [t3, t4]:
+        if t is not None:
+            t.cancel()
+            try:
+                await t
+            except asyncio.CancelledError:
+                pass
+
+    if seam_reached["value"]:
+        # Rotation path: flush the final partial utterance, then hand off cleanly.
         try:
-            await t3
+            await openai_ws.send(json.dumps({"type": "input_audio_buffer.commit"}))
+        except Exception:
+            pass
+        # Brief drain so the last completed event is emitted before we tear down.
+        await asyncio.sleep(1.0)
+        t2.cancel()
+        try:
+            await t2
         except asyncio.CancelledError:
             pass
+        return "rotate"
 
-    # Flush any audio still in the buffer. Server-VAD mode may have a trailing
-    # partial turn that hasn't hit a silence boundary yet; a manual commit closes
-    # it so the final words aren't lost. Then give OpenAI a moment to return the
-    # last segment before tearing down the OpenAI→client pump.
+    # Normal stop path: flush trailing audio and wait for OpenAI's final segment.
     try:
         await openai_ws.send(json.dumps({"type": "input_audio_buffer.commit"}))
     except Exception:
@@ -399,21 +486,45 @@ async def _relay_session(client_ws: WebSocket, openai_ws, manual_commit: bool = 
         await t2
     except asyncio.CancelledError:
         pass
+    return "done"
 
 
 @router.websocket("/transcribe-stream")
 async def transcribe_stream_ws(
     websocket: WebSocket,
-    token: str = Query(...),
+    token: str | None = Query(None),
+    ticket: str | None = Query(None),
 ) -> None:
-    """Backend-proxied OpenAI Realtime transcription session.
-    Bearer token passed as query param ?token= (browser WS can't set headers).
+    """Backend-proxied OpenAI Realtime transcription with upstream session rotation.
+
+    Auth: prefer ``?ticket=`` (short-lived single-use; no PHI in logs) over the
+    legacy ``?token=`` (long-lived bearer).  Both are accepted so the transition
+    can be rolled out gradually.
+
+    Rotation: when the upstream session nears the provider's lifetime limit
+    (controlled by ``ROTATION_INTERVAL_S``), the relay detects a clean VAD
+    utterance boundary, hands off to a fresh OpenAI connection, and continues
+    without interrupting the client WebSocket.
     """
-    # Validate before accept so browser sees close frame on bad token
-    try:
-        _session = decode_token(token)
-    except Exception:
-        await websocket.close(code=1008, reason="Invalid token")
+    # --- Auth: ticket (preferred) or legacy token ---
+    if ticket:
+        entry = _stream_tickets.pop(ticket, None)
+        if not entry:
+            await websocket.close(code=1008, reason="Invalid or expired ticket")
+            return
+        _username, expires_at = entry
+        if time.time() > expires_at:
+            await websocket.close(code=1008, reason="Expired ticket")
+            return
+        ws_session = WebAPISession(username=_username, sessionId="", rights=[])
+    elif token:
+        try:
+            ws_session = decode_token(token)
+        except Exception:
+            await websocket.close(code=1008, reason="Invalid token")
+            return
+    else:
+        await websocket.close(code=1008, reason="Authentication required")
         return
 
     if not is_realtime_streaming_available:
@@ -424,55 +535,69 @@ async def transcribe_stream_ws(
 
     import websockets as ws_lib  # noqa: PLC0415
 
-    # GA Realtime API for transcription sessions uses intent parameter instead of model in URL
     openai_url = "wss://api.openai.com/v1/realtime?intent=transcription"
-    openai_headers = {
-        "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
-    }
+    openai_headers = {"Authorization": f"Bearer {settings.OPENAI_API_KEY}"}
+
+    model = settings.REALTIME_TRANSCRIPTION_MODEL
+    is_whisper = model == "gpt-realtime-whisper"
+    rotation_interval = settings.ROTATION_INTERVAL_S
+
+    def _session_update_msg() -> str:
+        transcription_cfg: dict = {"model": model, "language": "en"}
+        if is_whisper:
+            transcription_cfg["delay"] = settings.REALTIME_TRANSCRIPTION_DELAY
+            turn_detection = None
+        else:
+            turn_detection = {
+                "type": "server_vad",
+                "threshold": 0.5,
+                "prefix_padding_ms": 300,
+                "silence_duration_ms": settings.REALTIME_VAD_SILENCE_MS,
+            }
+        return json.dumps({
+            "type": "session.update",
+            "session": {
+                "type": "transcription",
+                "audio": {
+                    "input": {
+                        "format": {"type": "audio/pcm", "rate": 24000},
+                        "transcription": transcription_cfg,
+                        "turn_detection": turn_detection,
+                    }
+                }
+            },
+        })
+
+    session_msg = _session_update_msg()
+    rotation_count = 0
 
     try:
-        async with ws_lib.connect(openai_url, additional_headers=openai_headers) as openai_ws:
-            logger.info("Connected to OpenAI Realtime WebSocket")
-
-            model = settings.REALTIME_TRANSCRIPTION_MODEL
-            is_whisper = model == "gpt-realtime-whisper"
-
-            transcription_cfg: dict = {"model": model, "language": "en"}
-            if is_whisper:
-                # whisper has no server VAD: `delay` enables live partial deltas and
-                # _relay_session commits the buffer on a timer.
-                transcription_cfg["delay"] = settings.REALTIME_TRANSCRIPTION_DELAY
-                turn_detection = None
-            else:
-                # gpt-4o-transcribe family: let SERVER VAD segment on natural silence
-                # and auto commit+clear. silence_duration_ms is how long a pause must
-                # last to close a turn — 500 ms balances responsiveness vs word splits.
-                turn_detection = {
-                    "type": "server_vad",
-                    "threshold": 0.5,
-                    "prefix_padding_ms": 300,
-                    # Shorter silence window → turns close faster → transcript text
-                    # appears after shorter pauses (more responsive). Tunable via env.
-                    "silence_duration_ms": settings.REALTIME_VAD_SILENCE_MS,
-                }
-
-            await openai_ws.send(json.dumps({
-                "type": "session.update",
-                "session": {
-                    "type": "transcription",
-                    "audio": {
-                        "input": {
-                            "format": {"type": "audio/pcm", "rate": 24000},
-                            "transcription": transcription_cfg,
-                            "turn_detection": turn_detection,
-                        }
-                    }
-                },
-            }))
-            await _relay_session(websocket, openai_ws, manual_commit=is_whisper)
-
-
-
+        while True:
+            try:
+                async with ws_lib.connect(openai_url, additional_headers=openai_headers) as openai_ws:
+                    logger.info(f"Connected to OpenAI Realtime WS (rotation #{rotation_count})")
+                    await openai_ws.send(session_msg)
+                    result = await _relay_session(
+                        websocket, openai_ws,
+                        manual_commit=is_whisper,
+                        rotation_timeout=float(rotation_interval) if rotation_interval > 0 else None,
+                    )
+                if result == "done":
+                    break
+                # "rotate": close old upstream (context exit), open new one
+                rotation_count += 1
+                logger.info(f"Upstream rotation #{rotation_count}: opening new OpenAI connection")
+            except WebSocketDisconnect:
+                break
+            except Exception as e:
+                logger.error(f"Upstream connection error (rotation #{rotation_count}): {e}")
+                try:
+                    await websocket.send_json({"type": "error", "message": "Live captions degraded; batch fallback active"})
+                except Exception:
+                    pass
+                break
+    except WebSocketDisconnect:
+        pass
     except Exception as e:
         logger.error(f"Realtime WS proxy error: {e}")
         try:
@@ -559,17 +684,30 @@ class FinalizeResponse(BaseModel):
 
 @router.post("/transcribe-finalize")
 async def extension_transcribe_finalize(
-    audio: UploadFile,
     transcript: str = Form(...),
     encounter_id: str | None = Form(None),
     patient_id: str | None = Form(None),
+    session_id: str | None = Form(None),
+    audio: UploadFile | None = File(None),
     session: WebAPISession = Depends(get_current_session),
     database: db.DatabaseSession = Depends(db.get_database_session),
 ) -> FinalizeResponse:
-    """Accept the webm audio blob + pre-streamed transcript, run speaker labeling,
-    persist Encounter + Recording, return the encounter id + labeled turns.
-    Audio is stored but not re-transcribed (transcript already provided).
+    """Finalize a streaming session: run speaker labeling, persist encounter.
+
+    Accepts either a pre-uploaded chunked session (``session_id``) or a legacy
+    full audio blob (``audio`` file upload).  The transcript is always provided
+    by the caller — audio is stored for archival but not re-transcribed.
     """
+    logger.info(f"AUDIT PHI_WRITE user={session.username!r} action=transcribe_finalize session_id={session_id!r}")
+    # If chunks were uploaded incrementally, assemble and clean them up.
+    if session_id:
+        assembled = _assemble_chunks(session_id)
+        _cleanup_chunks(session_id)
+        logger.info(
+            f"Finalize via session_id={session_id!r}: "
+            f"{'assembled ' + str(len(assembled)) + ' bytes' if assembled else 'no chunks found'}"
+        )
+    # else: audio blob provided via legacy path (or no audio at all)
     now = datetime.now(timezone.utc).astimezone()
 
     clinician_name = _get_clinician_name(session.username)
@@ -635,6 +773,48 @@ async def extension_transcribe_finalize(
 async def streaming_status() -> dict:
     """Report whether the Realtime streaming path is available."""
     return {"available": is_realtime_streaming_available, "model": settings.REALTIME_TRANSCRIPTION_MODEL}
+
+
+@router.post("/transcribe-chunk")
+async def upload_audio_chunk(
+    request: Request,
+    session_id: str = Query(...),
+    seq: int = Query(...),
+    session: WebAPISession = Depends(get_current_session),
+) -> dict:
+    """Accept a binary webm chunk for incremental (memory-bounded) audio upload.
+
+    Chunks are keyed by (session_id, seq) and stored individually so they can be
+    assembled in order at /transcribe-finalize. Duplicate seq values are silently
+    ignored (idempotent for safe retries).
+    """
+    body = await request.body()
+    if not body:
+        raise HTTPException(status_code=400, detail="Empty chunk body")
+    path = _chunk_path(session_id, seq)
+    if not path.exists():
+        path.write_bytes(body)
+    return {"ok": True, "session_id": session_id, "seq": seq}
+
+
+@router.post("/stream-ticket")
+async def create_stream_ticket(
+    session: WebAPISession = Depends(get_current_session),
+) -> dict:
+    """Issue a short-lived (60 s) single-use ticket for the transcription WebSocket.
+
+    Use the returned ``ticket`` value instead of the long-lived bearer token when
+    opening /transcribe-stream, so the bearer never appears in WS/access logs.
+    """
+    ticket = secrets.token_urlsafe(32)
+    expires_at = time.time() + 60
+    _stream_tickets[ticket] = (session.username, expires_at)
+    # Prune expired tickets to prevent unbounded growth
+    now = time.time()
+    expired = [t for t, (_, exp) in list(_stream_tickets.items()) if exp < now]
+    for t in expired:
+        _stream_tickets.pop(t, None)
+    return {"ticket": ticket}
 
 
 @router.post("/generate")

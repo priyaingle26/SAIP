@@ -1,22 +1,31 @@
 // Offscreen Document — Microphone capture for Manifest V3
 // Dual-path: MediaRecorder for the saved webm blob + Web Audio PCM16 for live streaming.
+//
+// Chunked archive upload: each MediaRecorder timeslice is POSTed as binary directly to
+// the backend (no base64, no accumulation in memory). On stop we send the sessionId so
+// background.ts can finalize by reference. If any chunk upload fails, we fall back to the
+// existing single-blob path (audioChunks[] accumulates the tail only).
+
+import { SAIP_BASE_URL, STORAGE_KEYS } from '../../lib/constants';
 
 const TARGET_SAMPLE_RATE = 24000; // OpenAI Realtime API requires 24 kHz mono PCM16
+const CHUNK_TIMESLICE_MS = 3000;  // 3-second slices balance request count vs latency
 
 let mediaRecorder: MediaRecorder | null = null;
-let audioChunks: Blob[] = [];
 let mimeType = 'audio/webm;codecs=opus';
+
+// Chunked-upload state
+let currentSessionId: string | null = null;
+let chunkSeq = 0;
+let chunkFailureOccurred = false;
+let fallbackChunks: Blob[] = []; // used only when a chunk upload fails
+let pendingUploads: Promise<void>[] = [];
 
 // Web Audio resources
 let audioContext: AudioContext | null = null;
 let pcmSource: MediaStreamAudioSourceNode | null = null;
 let pcmProcessor: ScriptProcessorNode | null = null;
 let streamPort: chrome.runtime.Port | null = null;
-
-// The AudioWorklet processor lives in public/pcm-worklet.js and is loaded by
-// extension-origin URL (chrome.runtime.getURL). A blob: URL is blocked by the
-// extension CSP (`script-src 'self'`), which previously forced a silent fallback
-// to the deprecated ScriptProcessorNode.
 
 // ─── Listen for commands from background worker ───────────────────────────────
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -42,30 +51,61 @@ async function startRecording() {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
-    // ── MediaRecorder path (webm blob for upload) ──────────────────────────
+    // ── MediaRecorder path (webm for upload) ──────────────────────────────
     if (!MediaRecorder.isTypeSupported(mimeType)) {
       mimeType = 'audio/webm';
     }
-    audioChunks = [];
+
+    // Reset chunked-upload state
+    currentSessionId = crypto.randomUUID();
+    chunkSeq = 0;
+    chunkFailureOccurred = false;
+    fallbackChunks = [];
+    pendingUploads = [];
+
     mediaRecorder = new MediaRecorder(stream, { mimeType });
 
     mediaRecorder.ondataavailable = (e) => {
-      if (e.data.size > 0) audioChunks.push(e.data);
+      if (e.data.size === 0) return;
+      const seq = chunkSeq++;
+
+      if (chunkFailureOccurred) {
+        // Already in fallback mode — accumulate locally
+        fallbackChunks.push(e.data);
+        return;
+      }
+
+      // Upload chunk as binary — no base64
+      const upload = uploadChunk(e.data, seq).catch(() => {
+        // On failure: switch to fallback mode and collect this chunk locally
+        chunkFailureOccurred = true;
+        fallbackChunks.push(e.data);
+      });
+      pendingUploads.push(upload);
     };
 
     mediaRecorder.onstop = async () => {
-      const blob = new Blob(audioChunks, { type: mimeType });
-      const base64 = await blobToBase64(blob);
+      // Wait for any in-flight chunk uploads to settle
+      await Promise.allSettled(pendingUploads);
 
-      // Notify background with the full audio blob
       const port = chrome.runtime.connect({ name: 'saip-audio' });
-      port.postMessage({ audioBase64: base64, mimeType });
+
+      if (!chunkFailureOccurred && currentSessionId) {
+        // Happy path: all chunks uploaded — finalize by sessionId reference
+        port.postMessage({ sessionId: currentSessionId, mimeType, allChunksUploaded: true });
+      } else {
+        // Fallback path: some chunks failed — send assembled blob as before
+        const blob = new Blob(fallbackChunks, { type: mimeType });
+        const base64 = await blobToBase64(blob);
+        port.postMessage({ audioBase64: base64, mimeType, allChunksUploaded: false });
+      }
 
       stream.getTracks().forEach((t) => t.stop());
       cleanupPcmCapture();
     };
 
-    mediaRecorder.start(1000);
+    // Raise timeslice to reduce request count while keeping memory bounded
+    mediaRecorder.start(CHUNK_TIMESLICE_MS);
 
     // ── Web Audio PCM path (live streaming) ───────────────────────────────
     await startPcmCapture(stream);
@@ -79,6 +119,21 @@ async function startRecording() {
   }
 }
 
+// ─── Upload one chunk as binary to the backend ───────────────────────────────
+async function uploadChunk(chunk: Blob, seq: number): Promise<void> {
+  const result = await chrome.storage.local.get(STORAGE_KEYS.authToken);
+  const token = result[STORAGE_KEYS.authToken] as string | undefined;
+  if (!token || !currentSessionId) throw new Error('No auth token or session');
+
+  const url = `${SAIP_BASE_URL}/transcribe-chunk?session_id=${encodeURIComponent(currentSessionId)}&seq=${seq}`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: chunk,
+  });
+  if (!res.ok) throw new Error(`Chunk upload failed: ${res.status}`);
+}
+
 // ─── Start PCM capture: AudioWorklet preferred, ScriptProcessor fallback ──────
 async function startPcmCapture(stream: MediaStream) {
   streamPort = chrome.runtime.connect({ name: 'saip-stream' });
@@ -88,7 +143,6 @@ async function startPcmCapture(stream: MediaStream) {
     audioContext = new AudioContext({ sampleRate: TARGET_SAMPLE_RATE });
     pcmSource = audioContext.createMediaStreamSource(stream);
 
-    // Load the worklet from an extension-origin URL (CSP-safe, not a blob:)
     try {
       const workletUrl = chrome.runtime.getURL('pcm-worklet.js');
       await audioContext.audioWorklet.addModule(workletUrl);
@@ -99,12 +153,10 @@ async function startPcmCapture(stream: MediaStream) {
         sendPcmFrame(pcm);
       };
       pcmSource.connect(workletNode);
-      // AudioWorklet does not need to be connected to destination to fire
     } catch {
       startScriptProcessorFallback();
     }
   } catch {
-    // AudioContext failed — fall back to ScriptProcessor on a new context
     startScriptProcessorFallback();
   }
 }
@@ -119,11 +171,10 @@ function startScriptProcessorFallback() {
     sendPcmFrame(pcm.buffer as ArrayBuffer);
   };
   pcmSource.connect(pcmProcessor);
-  pcmProcessor.connect(audioContext.destination); // must be connected for events to fire
+  pcmProcessor.connect(audioContext.destination);
 }
 
 function sendPcmFrame(buffer: ArrayBuffer) {
-  // chrome.runtime port only accepts JSON — encode as base64
   const b64 = arrayBufferToBase64(buffer);
   streamPort?.postMessage({ type: 'STREAM_PCM_FRAME', frame: b64 });
 }
@@ -135,13 +186,11 @@ function cleanupPcmCapture() {
   pcmProcessor = null;
   pcmSource = null;
   audioContext = null;
-  // Don't null streamPort here — background needs it for the final STREAM_STOP
 }
 
 // ─── Stop recording ────────────────────────────────────────────────────────────
 async function stopRecording() {
   if (mediaRecorder?.state === 'recording') {
-    // Signal background to stop PCM streaming before MediaRecorder stops
     streamPort?.postMessage({ type: 'STREAM_STOP' });
     mediaRecorder.stop();
     chrome.runtime.sendMessage({ type: 'RECORDING_STOPPED' });

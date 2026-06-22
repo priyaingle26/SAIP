@@ -10,6 +10,9 @@ export const SAIP_WS_BASE_URL = SAIP_BASE_URL.replace(/^http/, 'ws');
 export const SAIP_ENDPOINTS = {
   transcribe: `${SAIP_BASE_URL}/transcribe`,
   transcribeFinalize: `${SAIP_BASE_URL}/transcribe-finalize`,
+  transcribeChunk: (sessionId: string, seq: number) =>
+    `${SAIP_BASE_URL}/transcribe-chunk?session_id=${encodeURIComponent(sessionId)}&seq=${seq}`,
+  streamTicket: `${SAIP_BASE_URL}/stream-ticket`,
   streamingStatus: `${SAIP_BASE_URL}/streaming-status`,
   generate: `${SAIP_BASE_URL}/generate`,
   generateFormAnswers: `${SAIP_BASE_URL}/generate-form-answers`,
@@ -28,9 +31,12 @@ export const SAIP_ENDPOINTS = {
   autofillAudit: `${SAIP_BASE_URL}/autofill-audit`,
   autofillAuditForEncounter: (encounterId: string) =>
     `${SAIP_BASE_URL}/autofill-audit?encounter_id=${encodeURIComponent(encounterId)}`,
-  // Live transcription WebSocket (token passed as query param — browser WS can't set headers)
-  transcribeStream: (token: string) =>
-    `${SAIP_WS_BASE_URL}/transcribe-stream?token=${encodeURIComponent(token)}`,
+  // Live transcription WebSocket — prefer ticket (short-lived) over token (long-lived)
+  // to keep the bearer out of WS/access logs.
+  transcribeStream: (credential: string, useTicket = true) =>
+    useTicket
+      ? `${SAIP_WS_BASE_URL}/transcribe-stream?ticket=${encodeURIComponent(credential)}`
+      : `${SAIP_WS_BASE_URL}/transcribe-stream?token=${encodeURIComponent(credential)}`,
   // Patient management
   patients: `${SAIP_BASE_URL}/patients`,
   patientsSearch: (q: string) => `${SAIP_BASE_URL}/patients/search?q=${encodeURIComponent(q)}`,

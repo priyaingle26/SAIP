@@ -1,5 +1,5 @@
 
-import { transcribeAudio, generateNote, fetchEncounters, finalizeStream, checkStreamingStatus } from '../lib/apiClient';
+import { transcribeAudio, generateNote, fetchEncounters, finalizeStream, checkStreamingStatus, getStreamTicket } from '../lib/apiClient';
 import { verifyToken, getAuthToken } from '../lib/auth';
 import { STORAGE_KEYS, SAIP_ENDPOINTS } from '../lib/constants';
 import type { ExtensionMessage, Encounter, StreamFinalizedPayload } from '../lib/schemas';
@@ -21,22 +21,37 @@ export default defineBackground(() => {
     void reinjectContentScripts();
   });
 
-  // ── saip-audio port: receives the final webm blob from offscreen ────────────
-  // Used both for batch transcription AND (with streamingTranscript set) finalize
+  // ── saip-audio port: receives final audio reference from offscreen ──────────
+  // Two message formats:
+  //   { sessionId, mimeType, allChunksUploaded: true }  — chunked-upload path
+  //   { audioBase64, mimeType, allChunksUploaded: false } — legacy blob fallback
   chrome.runtime.onConnect.addListener((port) => {
     if (port.name === 'saip-audio') {
       port.onMessage.addListener(async (payload: {
-        audioBase64: string;
+        sessionId?: string;
+        audioBase64?: string;
         mimeType: string;
+        allChunksUploaded?: boolean;
         encounterId?: string;
       }) => {
         if (streamingTranscript !== null) {
-          // Streaming path: finalize with the assembled transcript
-          await finalizeStreamingSession(payload.audioBase64, payload.mimeType);
+          // Streaming path: finalize with the pre-streamed transcript
+          await finalizeStreamingSession(
+            payload.allChunksUploaded && payload.sessionId
+              ? payload.sessionId          // chunked path: reference by id
+              : (payload.audioBase64 ?? ''), // fallback: full blob base64
+            payload.mimeType,
+            payload.allChunksUploaded ?? false,
+          );
         } else {
-          // Batch path: upload and transcribe server-side (carry patient if selected)
+          // Batch path: upload and transcribe server-side
           const pid = await getSelectedPatientId();
-          await processAudio(payload.audioBase64, payload.mimeType, payload.encounterId, pid ?? undefined);
+          if (payload.allChunksUploaded && payload.sessionId) {
+            // Batch via already-uploaded chunks: finalize directly by session id
+            await finalizeStreamingSession(payload.sessionId, payload.mimeType, true);
+          } else {
+            await processAudio(payload.audioBase64 ?? '', payload.mimeType, payload.encounterId, pid ?? undefined);
+          }
         }
       });
     }
@@ -153,12 +168,10 @@ async function openRealtimeWs() {
 
   const token = await getAuthToken();
   if (!token) {
-    // Not authenticated — fall back to batch
     streamingTranscript = null;
     return;
   }
 
-  // Check whether backend has OpenAI configured
   const statusOk = await checkStreamingStatus();
   if (!statusOk) {
     streamingTranscript = null;
@@ -166,7 +179,12 @@ async function openRealtimeWs() {
     return;
   }
 
-  const url = SAIP_ENDPOINTS.transcribeStream(token);
+  // Prefer a short-lived ticket (keeps the bearer token out of WS access logs).
+  // Fall back to the token directly if the ticket endpoint is unavailable.
+  const ticket = await getStreamTicket();
+  const url = ticket
+    ? SAIP_ENDPOINTS.transcribeStream(ticket, true)      // ?ticket=…
+    : SAIP_ENDPOINTS.transcribeStream(token, false);     // ?token=… (legacy fallback)
 
   try {
     realtimeWs = new WebSocket(url);
@@ -213,8 +231,14 @@ async function openRealtimeWs() {
 }
 
 // ─── Finalize streaming session: label + persist ─────────────────────────────
+// audioRef: either a sessionId string (chunked path) or base64-encoded audio (legacy)
+// isSessionId: true when audioRef is a sessionId; false when it is base64 audio
 
-async function finalizeStreamingSession(audioBase64: string, mimeType: string) {
+async function finalizeStreamingSession(
+  audioRef: string,
+  mimeType: string,
+  isSessionId: boolean,
+) {
   const transcript = streamingTranscript ?? '';
   const patientId = await getSelectedPatientId();
   streamingTranscript = null;
@@ -222,19 +246,25 @@ async function finalizeStreamingSession(audioBase64: string, mimeType: string) {
 
   if (!transcript) {
     // Nothing was transcribed — fall through to batch
-    await processAudio(audioBase64, mimeType);
+    if (!isSessionId) await processAudio(audioRef, mimeType);
     return;
   }
 
   chrome.runtime.sendMessage({ type: 'TRANSCRIBE_COMPLETE', payload: { transcript } });
 
   try {
-    const byteChars = atob(audioBase64);
-    const bytes = new Uint8Array(byteChars.length);
-    for (let i = 0; i < byteChars.length; i++) bytes[i] = byteChars.charCodeAt(i);
-    const blob = new Blob([bytes], { type: mimeType });
+    let audioArg: Blob | string;
+    if (isSessionId) {
+      audioArg = audioRef; // sessionId: backend loads assembled audio
+    } else {
+      // Legacy base64 path: decode to blob
+      const byteChars = atob(audioRef);
+      const bytes = new Uint8Array(byteChars.length);
+      for (let i = 0; i < byteChars.length; i++) bytes[i] = byteChars.charCodeAt(i);
+      audioArg = new Blob([bytes], { type: mimeType });
+    }
 
-    const result = await finalizeStream(blob, transcript, undefined, patientId ?? undefined);
+    const result = await finalizeStream(audioArg, transcript, undefined, patientId ?? undefined);
     if (!result.success || !result.data) {
       chrome.runtime.sendMessage({ type: 'ERROR', error: result.error });
       return;
@@ -242,20 +272,20 @@ async function finalizeStreamingSession(audioBase64: string, mimeType: string) {
 
     const { encounterId: eid, transcript: labeled, turns } = result.data;
 
-    // Generate note using the labeled transcript (carries patient_id for profile update)
     const generateResult = await generateNote(eid, labeled, patientId ?? undefined);
     if (!generateResult.success || !generateResult.data) {
       chrome.runtime.sendMessage({ type: 'ERROR', error: generateResult.error });
       return;
     }
 
+    // Task 3.4: Do NOT persist PHI (transcript/note) to chrome.storage.local.
+    // Encounters are persisted server-side; the extension fetches them via /ext-encounters.
+    // We save only non-PHI metadata so the UI can show the session in the list.
     await saveEncounterLocally({
       id: eid,
       clientName: 'Current Session',
       date: new Date().toISOString(),
       status: 'generated',
-      transcript: labeled,
-      generatedNote: generateResult.data.note,
     });
 
     chrome.runtime.sendMessage({
@@ -297,13 +327,13 @@ async function processAudio(audioBase64: string, mimeType: string, encounterId?:
       return;
     }
 
+    // Task 3.4: save only non-PHI metadata to chrome.storage.local;
+    // transcript and note remain server-side only.
     await saveEncounterLocally({
       id: eid,
       clientName: 'Current Session',
       date: new Date().toISOString(),
       status: 'generated',
-      transcript,
-      generatedNote: generateResult.data.note,
     });
 
     chrome.runtime.sendMessage({

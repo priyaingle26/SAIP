@@ -72,6 +72,10 @@ class Settings(BaseSettings):
     # splitting turns on natural mid-sentence micro-pauses. 300 ms balances both;
     # raise toward 500 for cleaner segments, lower toward 200 for snappier updates.
     REALTIME_VAD_SILENCE_MS: int = 300
+    # Upstream session rotation: how many seconds before proactively opening a new
+    # OpenAI WS connection to stay under the provider's ~30-min session limit.
+    # Set to 0 to disable rotation (legacy single-connection mode).
+    ROTATION_INTERVAL_S: int = 1500
     SPEAKER_LABELING_MODEL: str = "gpt-4o-mini"
     GENERATIVE_AI_SERVICE: Literal["Ollama", "OpenAI", "AWS Bedrock", "VLLM", "LM Studio", "LlamaCpp", "Gemini"] = "Ollama"
     LOCAL_WHISPER_SERVICE_URL: str | None = None
