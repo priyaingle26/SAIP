@@ -16,8 +16,8 @@ export const PLAN_RECOMMENDATIONS: FormProfile = {
     { key: 'labComments', type: 'plain-textarea', labels: ['Comments'] },
     { key: 'labDateDrawn', type: 'date', labels: ['Date Drawn'] },
     { key: 'labWnl', type: 'radio', labels: ['WNL'], options: ['Yes', 'No', 'N/A - See Comments'] },
-    { key: 'problem1', type: 'text', labels: ['Problem (1)'] },
-    { key: 'status1', type: 'text', labels: ['Status'] },
+    { key: 'problem1', type: 'textarea', labels: ['Problem (1)', 'Problem'] },
+    { key: 'status1', type: 'textarea', labels: ['Status'] },
     { key: 'plan1', type: 'textarea', labels: ['Plan'] },
     { key: 'treatmentPlanComments', type: 'textarea', labels: ['Treatment Plan Comments'] },
     {

@@ -84,16 +84,34 @@ export const MSE_SIGNATURES: MseSignature[] = [
   {
     key: 'cognitiveAttention',
     label: 'COGNITIVE ATTENTION/CONCENTRATION',
-    options: ['No Gross Deficits', 'Concrete'],
+    options: ['No Gross Deficits', 'Concentration Problems', 'Concrete', 'Abstract', 'Appropriate for Tested IQ', 'Inattentive / Easily Distracted', 'Limited Attention Span', 'Not formally examined'],
   },
   {
     key: 'psychomotor',
     label: 'PSYCHOMOTOR',
-    options: ['Normal', 'Restless', 'Retardation', 'Fidgety', 'Hyperactive/Intrusive'],
+    options: ['Normal', 'Restless', 'Retardation', 'Fidgety', 'Hyperactive/Instrusive'],
   },
   {
-    key: 'musculoskeletal',
-    label: 'MUSCULOSKELETAL',
-    options: [], // unconfirmed live — needs task 8.2 verification; may render as radios
+    key: 'memory',
+    label: 'MEMORY',
+    options: ['Examined', 'Not examined', 'Unable to Assess'],
+  },
+  {
+    key: 'memoryImmediate',
+    label: 'Immediate',
+    options: ['Good', 'Fair', 'Impaired'],
+    tiebreakOrder: 1, // immediate, recent, past might share options
+  },
+  {
+    key: 'memoryRecent',
+    label: 'Recent',
+    options: ['Good', 'Fair', 'Impaired'],
+    tiebreakOrder: 2,
+  },
+  {
+    key: 'memoryPast',
+    label: 'Past',
+    options: ['Good', 'Fair', 'Impaired'],
+    tiebreakOrder: 3,
   },
 ];

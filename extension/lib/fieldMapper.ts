@@ -88,14 +88,8 @@ function getCategoryIdFromUrl(): number | null {
 }
 
 export function detectFormType(): DetectedForm {
-  // Optional deployment fast-path: an exact category_id match short-circuits
-  // keyword scoring (form-detection spec, "category_id mapping configured").
   const categoryId = getCategoryIdFromUrl();
-  if (categoryId !== null) {
-    const fastMatch = ALL_PROFILES.find((p) => p.detection.categoryIds?.includes(categoryId));
-    if (fastMatch) return { formType: fastMatch.id, confidence: 0.97 };
-  }
-
+  
   const pageText = [
     document.title,
     ...Array.from(document.querySelectorAll('h1,h2,h3,h4,label,th')).map((el) => el.textContent ?? ''),
@@ -110,7 +104,13 @@ export function detectFormType(): DetectedForm {
   for (const profile of ALL_PROFILES) {
     const anchorHits = profile.detection.anchors.filter((kw) => pageText.includes(kw.toUpperCase())).length;
     const supportHits = profile.detection.supporting.filter((kw) => pageText.includes(kw.toUpperCase())).length;
-    const score = anchorHits * 3 + supportHits;
+    
+    // category_id match gives a slight boost (+2) to break ties or favor the expected form,
+    // but overwhelming text evidence from the actual page content can still override it
+    // if the EHR did an AJAX navigation without updating the URL.
+    const categoryBonus = categoryId !== null && profile.detection.categoryIds?.includes(categoryId) ? 2 : 0;
+    
+    const score = anchorHits * 3 + supportHits + categoryBonus;
 
     if (!best || score > best.score) {
       secondScore = best ? best.score : 0;
@@ -256,7 +256,19 @@ function groupAfterAnchor<T extends HTMLInputElement>(elements: T[], anchor: HTM
   );
   if (!firstAfter) return elements;
   const groupName = firstAfter.name || firstAfter.id;
-  return elements.filter((el) => (el.name || el.id) === groupName);
+  const sameNameOrId = elements.filter((el) => (el.name || el.id) === groupName);
+
+  // If we only found 1 element, it means these checkboxes don't share a name/id
+  // (like the unique q_ ids in the Review of Systems list). Fall back to
+  // scoping them by their nearest containing table or fieldset.
+  if (sameNameOrId.length === 1) {
+    const container = firstAfter.closest('table, fieldset') || firstAfter.parentElement?.parentElement;
+    if (container) {
+      return elements.filter((el) => container.contains(el));
+    }
+  }
+
+  return sameNameOrId;
 }
 
 // ─── Build label map using the q_ → qnotes_ Credible pattern ─────────────────
@@ -277,7 +289,10 @@ function buildCredibleLabelMap(): Map<string, HTMLTextAreaElement> {
     if (!ta || ta.tagName !== 'TEXTAREA') continue;
 
     const text = getAdjacentText(cb).toUpperCase().trim();
-    if (text) map.set(text, ta);
+    // Keep the FIRST occurrence: duplicate labels (e.g. the 4 "Plan" blocks in
+    // Plan/Recommendations all share the same label text) must not overwrite
+    // the first entry, otherwise the autofill always targets the LAST block.
+    if (text && !map.has(text)) map.set(text, ta);
   }
 
   return map;
@@ -335,9 +350,18 @@ function normalizeDate(value: string): string | null {
 function fillDate(labels: string[], value: string): boolean {
   const iso = normalizeDate(value);
   if (!iso) return false;
-  const input = findElementByLabel<HTMLInputElement>('input[type="date"]', labels);
+  
+  // Find either a native HTML5 date input or a text input (used for jQuery Datepickers)
+  const input = findElementByLabel<HTMLInputElement>('input[type="date"], input[type="text"]', labels);
   if (!input) return false;
-  setNativeValue(input, iso);
+  
+  if (input.type === 'date') {
+    setNativeValue(input, iso);
+  } else {
+    // If it's a text input, the EHR almost certainly expects a localized format like MM/DD/YYYY
+    const [yyyy, mm, dd] = iso.split('-');
+    setNativeValue(input, `${mm}/${dd}/${yyyy}`);
+  }
   return true;
 }
 
@@ -374,6 +398,9 @@ function selectRadio(groupKeywords: string[], targetValue: string): boolean {
   }
 
   if (!match) return false;
+  
+  if (match.checked) return true; // Already selected; skip dispatching events so we don't accidentally toggle it off
+  
   match.checked = true;
   match.dispatchEvent(new Event('click', { bubbles: true }));
   match.dispatchEvent(new Event('change', { bubbles: true }));
@@ -394,8 +421,14 @@ function selectRadio(groupKeywords: string[], targetValue: string): boolean {
 // return the button whose value equals the wanted score. Clicking is deferred to
 // fireScoredClicksSequentially() — see below.
 function findScoredButton(labels: string[], value: string): HTMLInputElement | null {
-  const wanted = value.trim();
+  let wanted = value.trim();
   if (!wanted) return null;
+
+  // Normalize Yes/No → 1/0 for binary CRAFFT-style widgets so AI returning
+  // "No" (Yes/No phrasing) still correctly clicks the "0" button on the page.
+  const wantedLower = wanted.toLowerCase();
+  if (wantedLower === 'yes' || wantedLower === 'true') wanted = '1';
+  else if (wantedLower === 'no' || wantedLower === 'false') wanted = '0';
 
   const buttons = Array.from(
     document.querySelectorAll<HTMLInputElement>('input[type="button"][id^="x_"]')
@@ -754,10 +787,23 @@ export function applyFormAutofill(
     let ok = false;
     switch (field.type) {
       case 'textarea': {
+        // First try the Credible q_/qnotes_ paired textarea map
         const ta = findTextareaByLabel(field.labels, textareaLabelMap);
         if (ta) {
           setNativeValue(ta, value);
+          // If this is a paired textarea (qnotes_1234), check the corresponding box (q_1234)
+          if (ta.id.startsWith('qnotes_')) {
+            const cbId = 'q_' + ta.id.slice(7);
+            const cb = document.getElementById(cbId) as HTMLInputElement | null;
+            if (cb && !cb.checked) {
+              cb.checked = true;
+              cb.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+          }
           ok = true;
+        } else {
+          // Fall back to any plain <textarea> near a matching label
+          ok = fillPlainTextarea(field.labels, value);
         }
         break;
       }

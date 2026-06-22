@@ -49,6 +49,41 @@ export default function FormAssistant({ transcript, clinicalNote, patientId, con
     getLastFillLog().then(setLastLog);
   }, []);
 
+  // ─── Auto-calculate PHQ-9 Severity Guide ───────────────────────────────────
+  useEffect(() => {
+    if (!selectedFormType.includes('PHQ-9')) return;
+
+    const phqItems = [
+      'phqInterest', 'phqMood', 'phqSleep', 'phqEnergy', 'phqAppetite',
+      'phqSelfWorth', 'phqConcentration', 'phqPsychomotor', 'phqSelfHarm'
+    ];
+
+    let sum = 0;
+    let anyFilled = false;
+    for (const key of phqItems) {
+      const val = editedFields[key];
+      if (val && !isNaN(Number(val))) {
+        sum += Number(val);
+        anyFilled = true;
+      }
+    }
+
+    if (!anyFilled) return;
+
+    let severity = '';
+    const isAdolescent = selectedFormType.includes('Adolescent');
+
+    if (sum <= 4) severity = isAdolescent ? '0-4 No or Minimal Depression' : '1-4 Minimal Depression';
+    else if (sum <= 9) severity = '5-9 Mild Depression';
+    else if (sum <= 14) severity = '10-14 Moderate Depression';
+    else if (sum <= 19) severity = '15-19 Moderately Severe Depression';
+    else severity = isAdolescent ? 'Severe Depression' : '20-27 Severe Depression';
+
+    if (editedFields['phqSeverityGuide'] !== severity) {
+      setEditedFields(prev => ({ ...prev, phqSeverityGuide: severity }));
+    }
+  }, [editedFields, selectedFormType]);
+
   // ─── Detect form from the active tab ────────────────────────────────────────
   const handleDetect = useCallback(async () => {
     setError('');
@@ -148,8 +183,7 @@ export default function FormAssistant({ transcript, clinicalNote, patientId, con
       if (response?.type === 'AUTOFILL_FORM_COMPLETE') {
         const r = response.payload as FillLogEntry;
         const missedText = r.missed.length > 0 ? ` (${r.missed.length} fields not matched)` : '';
-        const manualText = r.manualRequired.length ? ` • ${r.manualRequired.length} scored item(s) need manual entry` : '';
-        setFillResult(`${r.filled} field${r.filled !== 1 ? 's' : ''} filled${missedText}${manualText}`);
+        setFillResult(`${r.filled} field${r.filled !== 1 ? 's' : ''} filled${missedText}`);
         setLastLog(r);
         setStep('done');
       } else {
@@ -272,32 +306,66 @@ export default function FormAssistant({ transcript, clinicalNote, patientId, con
         <Card style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
           <Label>Review &amp; Edit Answers</Label>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
-            {Object.entries(editedFields).map(([key, val]) => (
+            {Object.entries(editedFields).map(([key, val]) => {
+              const profile = formAnswers ? getProfileById(formAnswers.formType) : undefined;
+              const fieldDef = profile?.fields.find((f) => f.key === key);
+              const isOptionsField = fieldDef && (fieldDef.type === 'dropdown' || fieldDef.type === 'radio' || fieldDef.type === 'scored-widget' || fieldDef.type === 'scored-options') && fieldDef.options && fieldDef.options.length > 0;
+
+              return (
               <div key={key} style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-1)' }}>
                 <label
                   htmlFor={`saip-form-field-${key}`}
                   style={{ fontSize: 'var(--text-xs)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--color-primary)' }}
                 >
-                  {toLabel(key)}
+                  {fieldDef?.labels?.[0]?.toUpperCase() ?? toLabel(key).toUpperCase()}
                 </label>
-                <textarea
-                  id={`saip-form-field-${key}`}
-                  value={val}
-                  rows={3}
-                  onChange={(e) => setEditedFields((prev) => ({ ...prev, [key]: e.target.value }))}
-                  style={{
-                    ...INPUT_STYLE,
-                    resize: 'vertical',
-                    lineHeight: 'var(--leading-relaxed)',
-                    fontSize: 'var(--text-base)',
-                    padding: '8px 10px',
-                    minHeight: 70,
-                  }}
-                  onFocus={(e) => { e.target.style.borderColor = 'var(--color-primary)'; e.target.style.boxShadow = '0 0 0 3px var(--color-ring)'; }}
-                  onBlur={(e) => { e.target.style.borderColor = 'var(--color-border)'; e.target.style.boxShadow = 'none'; }}
-                />
+                {isOptionsField ? (
+                  <select
+                    id={`saip-form-field-${key}`}
+                    value={(() => {
+                      // For binary scored-widget fields (options: ['1','0']), normalize
+                      // AI responses of 'Yes'/'No' to '1'/'0' so the dropdown shows correctly.
+                      if (fieldDef?.type === 'scored-widget' && fieldDef.options?.includes('1') && fieldDef.options?.includes('0')) {
+                        if (val?.toLowerCase() === 'yes') return '1';
+                        if (val?.toLowerCase() === 'no') return '0';
+                      }
+                      return val;
+                    })()}
+                    onChange={(e) => setEditedFields((prev) => ({ ...prev, [key]: e.target.value }))}
+                    style={{
+                      ...INPUT_STYLE,
+                      fontSize: 'var(--text-base)',
+                      padding: '8px 10px',
+                      cursor: 'pointer',
+                    }}
+                    onFocus={(e) => { e.target.style.borderColor = 'var(--color-primary)'; e.target.style.boxShadow = '0 0 0 3px var(--color-ring)'; }}
+                    onBlur={(e) => { e.target.style.borderColor = 'var(--color-border)'; e.target.style.boxShadow = 'none'; }}
+                  >
+                    <option value="">— Select —</option>
+                    {fieldDef.options!.map((opt) => (
+                      <option key={opt} value={opt}>{opt}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <textarea
+                    id={`saip-form-field-${key}`}
+                    value={val}
+                    rows={3}
+                    onChange={(e) => setEditedFields((prev) => ({ ...prev, [key]: e.target.value }))}
+                    style={{
+                      ...INPUT_STYLE,
+                      resize: 'vertical',
+                      lineHeight: 'var(--leading-relaxed)',
+                      fontSize: 'var(--text-base)',
+                      padding: '8px 10px',
+                      minHeight: 70,
+                    }}
+                    onFocus={(e) => { e.target.style.borderColor = 'var(--color-primary)'; e.target.style.boxShadow = '0 0 0 3px var(--color-ring)'; }}
+                    onBlur={(e) => { e.target.style.borderColor = 'var(--color-border)'; e.target.style.boxShadow = 'none'; }}
+                  />
+                )}
               </div>
-            ))}
+            )})}
           </div>
 
           <Divider />

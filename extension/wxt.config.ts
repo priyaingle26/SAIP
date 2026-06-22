@@ -25,6 +25,9 @@ export default defineConfig({
     action: {
       default_title: 'Open SAIP',
     },
+    content_security_policy: {
+      extension_pages: "script-src 'self' 'wasm-unsafe-eval' http://localhost:3000 http://localhost:3001; object-src 'self';"
+    },
   },
   modules: ['@wxt-dev/module-react'],
 });
