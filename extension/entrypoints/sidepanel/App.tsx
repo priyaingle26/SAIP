@@ -663,7 +663,7 @@ export default function App() {
 
               <input
                 type="file"
-                accept="audio/*"
+                accept="audio/*,video/mp4,video/mpeg,.mp3,.mp4,.mpeg,.m4a,.webm,.wav,.mpga,.ogg"
                 style={{ display: 'none' }}
                 ref={fileInputRef}
                 onChange={handleFileUpload}

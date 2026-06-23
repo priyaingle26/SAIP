@@ -20,6 +20,7 @@ import { PLAN_RECOMMENDATIONS } from './standalone/plan-recommendations';
 import { DIAGNOSTIC_REVIEW } from './standalone/diagnostic-review';
 import { IDD_ONLY } from './standalone/idd-only';
 import { IDD_CASEMGT_SHORT } from './standalone/idd-casemgt-short';
+import { PERSON_CENTERED_RECOVERY_PLAN_MH } from './standalone/person-centered-recovery-plan-mh';
 
 import { PSYCH_EVAL_MAIN } from './eval-subpages/psych-eval-main';
 import { EM_EPT_PATIENT_HISTORY } from './eval-subpages/em-ept-patient-history';
@@ -51,6 +52,7 @@ export const STANDALONE_PROFILES: FormProfile[] = [
   DIAGNOSTIC_REVIEW,
   IDD_ONLY,
   IDD_CASEMGT_SHORT,
+  PERSON_CENTERED_RECOVERY_PLAN_MH,
 ];
 
 // Order matters slightly for readability only — scoring is independent per

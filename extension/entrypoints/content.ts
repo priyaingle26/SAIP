@@ -20,8 +20,11 @@ function getEncounterId(): string | null {
 export default defineContentScript({
   matches: [
     'https://*.crediblebh.com/*',
+    // Multi-level subdomains (e.g. ext.cbh3.crediblebh.com)
+    'https://*.*.crediblebh.com/*',
+    'https://*.*.*.crediblebh.com/*',
     'https://*.thecrediblesolution.com/*',
-    'https://*.crediblebh.com/webforms/questions.asp*',
+    'https://*.*.thecrediblesolution.com/*',
     'http://localhost/*',
   ],
   allFrames: true,

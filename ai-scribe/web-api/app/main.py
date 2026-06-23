@@ -126,7 +126,9 @@ app.add_middleware(
         frontend_url,
         "http://localhost:4000",
         "http://127.0.0.1:4000",
-        "http://192.168.1.11:4000"
+        "http://192.168.1.11:4000",
+        "http://192.168.1.3:4000",
+        "http://192.168.1.3.nip.io:4000"
     ],
     # chrome-extension://* — sidepanel / background service worker calls
     # *.crediblebh.com    — content script fetch() runs in Credible's page
