@@ -1,12 +1,13 @@
 // Offscreen Document — Microphone capture for Manifest V3
 // Dual-path: MediaRecorder for the saved webm blob + Web Audio PCM16 for live streaming.
 //
-// Chunked archive upload: each MediaRecorder timeslice is POSTed as binary directly to
-// the backend (no base64, no accumulation in memory). On stop we send the sessionId so
-// background.ts can finalize by reference. If any chunk upload fails, we fall back to the
-// existing single-blob path (audioChunks[] accumulates the tail only).
+// Durable capture: each MediaRecorder timeslice is encrypted and written to the durable
+// IndexedDB store (lib/durableStore) BEFORE any upload is attempted, so capture never
+// depends on the network and survives service-worker / offscreen-document eviction. The
+// background sync queue drains those chunks from the same shared IndexedDB. We notify it
+// after each persist (live drain) and on stop (finalize once fully synced).
 
-import { SAIP_BASE_URL, STORAGE_KEYS } from '../../lib/constants';
+import { putChunk, setSessionMeta, requestPersistentStorage } from '../../lib/durableStore';
 
 const TARGET_SAMPLE_RATE = 24000; // OpenAI Realtime API requires 24 kHz mono PCM16
 const CHUNK_TIMESLICE_MS = 3000;  // 3-second slices balance request count vs latency
@@ -14,12 +15,10 @@ const CHUNK_TIMESLICE_MS = 3000;  // 3-second slices balance request count vs la
 let mediaRecorder: MediaRecorder | null = null;
 let mimeType = 'audio/webm;codecs=opus';
 
-// Chunked-upload state
+// Durable-capture state
 let currentSessionId: string | null = null;
 let chunkSeq = 0;
-let chunkFailureOccurred = false;
-let fallbackChunks: Blob[] = []; // used only when a chunk upload fails
-let pendingUploads: Promise<void>[] = [];
+let pendingPersists: Promise<void>[] = [];
 
 // Web Audio resources
 let audioContext: AudioContext | null = null;
@@ -56,48 +55,46 @@ async function startRecording() {
       mimeType = 'audio/webm';
     }
 
-    // Reset chunked-upload state
+    // Reset durable-capture state
     currentSessionId = crypto.randomUUID();
     chunkSeq = 0;
-    chunkFailureOccurred = false;
-    fallbackChunks = [];
-    pendingUploads = [];
+    pendingPersists = [];
+
+    // Best-effort: keep the encrypted container from being evicted under pressure.
+    void requestPersistentStorage();
+    // Record the session so the sync queue can drain + finalize it even across evictions.
+    await setSessionMeta({
+      sessionId: currentSessionId,
+      mimeType,
+      status: 'recording',
+      createdAt: Date.now(),
+    });
 
     mediaRecorder = new MediaRecorder(stream, { mimeType });
 
     mediaRecorder.ondataavailable = (e) => {
-      if (e.data.size === 0) return;
+      if (e.data.size === 0 || !currentSessionId) return;
       const seq = chunkSeq++;
+      const sid = currentSessionId;
 
-      if (chunkFailureOccurred) {
-        // Already in fallback mode — accumulate locally
-        fallbackChunks.push(e.data);
-        return;
-      }
-
-      // Upload chunk as binary — no base64
-      const upload = uploadChunk(e.data, seq).catch(() => {
-        // On failure: switch to fallback mode and collect this chunk locally
-        chunkFailureOccurred = true;
-        fallbackChunks.push(e.data);
-      });
-      pendingUploads.push(upload);
+      // Encrypt + persist durably FIRST; uploading is the sync queue's job. A failure
+      // here just leaves the chunk pending — it is never dropped or held only in memory.
+      const persist = putChunk(sid, seq, e.data)
+        .then(() => {
+          // Wake the background sync queue to drain while online (best-effort).
+          chrome.runtime.sendMessage({ type: 'CHUNK_PERSISTED', sessionId: sid }).catch(() => {});
+        })
+        .catch(() => {});
+      pendingPersists.push(persist);
     };
 
     mediaRecorder.onstop = async () => {
-      // Wait for any in-flight chunk uploads to settle
-      await Promise.allSettled(pendingUploads);
+      // Ensure every produced chunk is durably written before we ask to finalize.
+      await Promise.allSettled(pendingPersists);
 
-      const port = chrome.runtime.connect({ name: 'saip-audio' });
-
-      if (!chunkFailureOccurred && currentSessionId) {
-        // Happy path: all chunks uploaded — finalize by sessionId reference
-        port.postMessage({ sessionId: currentSessionId, mimeType, allChunksUploaded: true });
-      } else {
-        // Fallback path: some chunks failed — send assembled blob as before
-        const blob = new Blob(fallbackChunks, { type: mimeType });
-        const base64 = await blobToBase64(blob);
-        port.postMessage({ audioBase64: base64, mimeType, allChunksUploaded: false });
+      if (currentSessionId) {
+        const port = chrome.runtime.connect({ name: 'saip-audio' });
+        port.postMessage({ sessionId: currentSessionId, mimeType });
       }
 
       stream.getTracks().forEach((t) => t.stop());
@@ -117,21 +114,6 @@ async function startRecording() {
       error: `Microphone access denied: ${err}`,
     });
   }
-}
-
-// ─── Upload one chunk as binary to the backend ───────────────────────────────
-async function uploadChunk(chunk: Blob, seq: number): Promise<void> {
-  const result = await chrome.storage.local.get(STORAGE_KEYS.authToken);
-  const token = result[STORAGE_KEYS.authToken] as string | undefined;
-  if (!token || !currentSessionId) throw new Error('No auth token or session');
-
-  const url = `${SAIP_BASE_URL}/transcribe-chunk?session_id=${encodeURIComponent(currentSessionId)}&seq=${seq}`;
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}` },
-    body: chunk,
-  });
-  if (!res.ok) throw new Error(`Chunk upload failed: ${res.status}`);
 }
 
 // ─── Start PCM capture: AudioWorklet preferred, ScriptProcessor fallback ──────
@@ -214,16 +196,4 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
     binary += String.fromCharCode(bytes[i]);
   }
   return btoa(binary);
-}
-
-function blobToBase64(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      const result = reader.result as string;
-      resolve(result.split(',')[1]);
-    };
-    reader.onerror = reject;
-    reader.readAsDataURL(blob);
-  });
 }

@@ -211,18 +211,9 @@ class AmazonTranscribeService(TranscriptionService):
             
             media_uri = f"s3://{self._bucket_name}/{s3_key}"
 
-            
+
             log.info(f"Starting AWS Transcribe job: {job_name}, media_uri={media_uri}")
-            response = self._client.start_transcription_job(
-                TranscriptionJobName=job_name,
-                Media={"MediaFileUri": media_uri},
-                MediaFormat=format_extension,
-                LanguageCode=language_code,
-                Settings={
-                    "ShowSpeakerLabels": False,
-                    "ShowAlternatives": False
-                }
-            )
+            self._start_job(job_name, media_uri, format_extension, language_code)
 
             transcript = await self._wait_for_transcription(job_name)
             
@@ -308,22 +299,10 @@ class AmazonTranscribeService(TranscriptionService):
                 )
                 
                 media_uri = f"s3://{self._bucket_name}/{s3_key}"
-                
+
                 log.info(f"Starting transcription job for segment {i}: {job_name}")
-                
-                
-                self._client.start_transcription_job(
-                    TranscriptionJobName=job_name,
-                    Media={"MediaFileUri": media_uri},
-                    MediaFormat=format_ext,
-                    LanguageCode=language_code,
-                    Settings={
-                        "ShowSpeakerLabels": False,
-                        "ShowAlternatives": False,
-                    }
-                )
-                
-                
+                self._start_job(job_name, media_uri, format_ext, language_code)
+
                 task = self._wait_for_transcription(job_name)
                 tasks.append(task)
             
@@ -352,47 +331,122 @@ class AmazonTranscribeService(TranscriptionService):
                 except Exception as cleanup_error:
                     log.error(f"Failed to cleanup S3 object {s3_key}: {str(cleanup_error)}")
 
+    def _start_job(self, job_name, media_uri, media_format, language_code):
+        """Start a Transcribe job — medical (with diarization) or standard, per config.
+
+        Medical jobs use the medical vocabulary model and a clinician/patient
+        conversation type, and write their output to an S3 bucket.
+        """
+        from app.config import settings
+
+        if settings.AWS_TRANSCRIBE_MEDICAL:
+            output_bucket = settings.AWS_TRANSCRIBE_OUTPUT_BUCKET or self._bucket_name
+            # Transcribe Medical only supports en-US.
+            self._client.start_medical_transcription_job(
+                MedicalTranscriptionJobName=job_name,
+                Media={"MediaFileUri": media_uri},
+                MediaFormat=media_format,
+                LanguageCode="en-US",
+                Specialty=settings.AWS_TRANSCRIBE_SPECIALTY,
+                Type=settings.AWS_TRANSCRIBE_TYPE,
+                OutputBucketName=output_bucket,
+                Settings={
+                    "ShowSpeakerLabels": settings.AWS_TRANSCRIBE_SHOW_SPEAKER_LABELS,
+                    "MaxSpeakerLabels": settings.AWS_TRANSCRIBE_MAX_SPEAKERS,
+                },
+            )
+        else:
+            self._client.start_transcription_job(
+                TranscriptionJobName=job_name,
+                Media={"MediaFileUri": media_uri},
+                MediaFormat=media_format,
+                LanguageCode=language_code,
+                Settings={
+                    "ShowSpeakerLabels": settings.AWS_TRANSCRIBE_SHOW_SPEAKER_LABELS,
+                    "MaxSpeakerLabels": settings.AWS_TRANSCRIBE_MAX_SPEAKERS,
+                } if settings.AWS_TRANSCRIBE_SHOW_SPEAKER_LABELS else {
+                    "ShowSpeakerLabels": False,
+                    "ShowAlternatives": False,
+                },
+            )
+
+    @staticmethod
+    def _build_transcript(transcript_json: dict) -> str:
+        """Return a transcript string, speaker-tagged when diarization is present.
+
+        When AWS diarized the audio, emit one line per speaker turn
+        (``spk_0: ...`` / ``spk_1: ...``) so the downstream speaker-labeling step can
+        map them onto the existing turn structure. Otherwise return the plain transcript.
+        """
+        results = transcript_json.get("results", {})
+        segments = results.get("speaker_labels", {}).get("segments")
+        items = results.get("items")
+        if not segments or not items:
+            return results["transcripts"][0]["transcript"]
+
+        # Map each pronunciation item (by start_time) to its content + trailing punctuation.
+        words: list[tuple[str, str]] = []  # (start_time, content)
+        for it in items:
+            content = (it.get("alternatives") or [{}])[0].get("content", "")
+            if it.get("type") == "punctuation":
+                if words:
+                    words[-1] = (words[-1][0], words[-1][1] + content)
+                continue
+            words.append((it.get("start_time", ""), content))
+        by_start = {st: c for st, c in words if st}
+
+        lines: list[str] = []
+        current_spk = None
+        buf: list[str] = []
+        for seg in segments:
+            spk = seg.get("speaker_label", "spk")
+            for item in seg.get("items", []):
+                st = item.get("start_time")
+                word = by_start.get(st)
+                if word is None:
+                    continue
+                if spk != current_spk:
+                    if buf:
+                        lines.append(f"{current_spk}: {' '.join(buf)}")
+                    buf = []
+                    current_spk = spk
+                buf.append(word)
+        if buf:
+            lines.append(f"{current_spk}: {' '.join(buf)}")
+        return "\n".join(lines) if lines else results["transcripts"][0]["transcript"]
+
     async def _wait_for_transcription(self, job_name: str) -> str:
+        from app.config import settings
+        is_medical = settings.AWS_TRANSCRIBE_MEDICAL
+
         max_attempts = 60
         attempts = 0
         base_delay = 2
         max_delay = 20
-        
+
         log.info(f"Waiting for transcription job to complete: {job_name}")
-        
+
         while attempts < max_attempts:
             try:
-                status = self._client.get_transcription_job(
-                    TranscriptionJobName=job_name
-                )
-                
-                job_status = status["TranscriptionJob"]["TranscriptionJobStatus"]
-                
+                if is_medical:
+                    status = self._client.get_medical_transcription_job(
+                        MedicalTranscriptionJobName=job_name
+                    )
+                    job = status["MedicalTranscriptionJob"]
+                else:
+                    status = self._client.get_transcription_job(TranscriptionJobName=job_name)
+                    job = status["TranscriptionJob"]
+
+                job_status = job["TranscriptionJobStatus"]
+
                 if job_status == "COMPLETED":
                     log.info(f"Transcription job completed: {job_name}")
-                    # Get the transcript URL
-                    transcript_uri = status["TranscriptionJob"]["Transcript"]["TranscriptFileUri"]
-                    
-                    async with aiohttp.ClientSession() as session:
-                        async with session.get(transcript_uri) as response:
-                            if response.status == 200:
-                                content = await response.read()
-                                try:
-                                    # Parse the transcript JSON
-                                    transcript_json = json.loads(content)
-                                    return transcript_json["results"]["transcripts"][0]["transcript"]
-                                except (json.JSONDecodeError, KeyError) as e:
-                                    # Fallback parsing approach
-                                    content_text = content.decode("utf-8")
-                                    transcript_json = json.loads(content_text)
-                                    return transcript_json["results"]["transcripts"][0]["transcript"]
-                            else:
-                                raise ExternalServiceError(
-                                    self.service_name,
-                                    f"Failed to download transcript: {response.status}"
-                                )
+                    transcript_uri = job["Transcript"]["TranscriptFileUri"]
+                    content = await self._fetch_transcript_bytes(transcript_uri)
+                    transcript_json = json.loads(content)
+                    return self._build_transcript(transcript_json)
                 elif job_status == "FAILED":
-                    error_reason = status["TranscriptionJob"].get("FailureReason", "Unknown error")
+                    error_reason = job.get("FailureReason", "Unknown error")
                     log.error(f"Transcription job failed: {job_name}, reason: {error_reason}")
                     raise ExternalServiceError(
                         self.service_name,
@@ -400,11 +454,13 @@ class AmazonTranscribeService(TranscriptionService):
                     )
                 elif job_status in ["IN_PROGRESS", "QUEUED"]:
                     log.debug(f"Transcription job {job_name} status: {job_status}, attempt {attempts + 1}")
-                
+
                 delay = min(max_delay, base_delay * (1.5 ** min(attempts, 8)))
                 await asyncio.sleep(delay)
                 attempts += 1
-                
+
+            except ExternalServiceError:
+                raise
             except Exception as e:
                 log.error(f"Error checking transcription job status: {job_name}, {str(e)}")
                 attempts += 1
@@ -412,12 +468,40 @@ class AmazonTranscribeService(TranscriptionService):
                     await asyncio.sleep(base_delay)
                 else:
                     raise
-            
+
         log.error(f"Transcription job timed out: {job_name}")
         raise ExternalServiceTimeout(
             self.service_name,
             f"Transcription job {job_name} timed out after {max_attempts} attempts"
         )
+
+    async def _fetch_transcript_bytes(self, transcript_uri: str) -> bytes:
+        """Download a transcript result. Medical jobs write to our S3 bucket (needs
+        signed GetObject); standard jobs return a directly-fetchable service URL."""
+        # If the URI points at our own bucket, read it via the S3 client (authorized).
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(transcript_uri)
+            # Forms: https://s3.<region>.amazonaws.com/<bucket>/<key> or
+            #        https://<bucket>.s3.<region>.amazonaws.com/<key>
+            if self._bucket_name and self._bucket_name in transcript_uri:
+                if parsed.path.lstrip("/").startswith(f"{self._bucket_name}/"):
+                    key = parsed.path.lstrip("/")[len(self._bucket_name) + 1:]
+                else:
+                    key = parsed.path.lstrip("/")
+                obj = self._s3_client.get_object(Bucket=self._bucket_name, Key=key)
+                return obj["Body"].read()
+        except Exception as e:
+            log.warning(f"S3 transcript fetch failed ({e}); falling back to HTTP")
+
+        async with aiohttp.ClientSession() as session:
+            async with session.get(transcript_uri) as response:
+                if response.status == 200:
+                    return await response.read()
+                raise ExternalServiceError(
+                    self.service_name,
+                    f"Failed to download transcript: {response.status}"
+                )
         
     def _combine_transcripts(self, transcripts: List[str]) -> str:
         """

@@ -689,6 +689,7 @@ async def extension_transcribe_finalize(
     encounter_id: str | None = Form(None),
     patient_id: str | None = Form(None),
     session_id: str | None = Form(None),
+    retranscribe: bool = Form(False),
     audio: UploadFile | None = File(None),
     session: WebAPISession = Depends(get_current_session),
     database: db.DatabaseSession = Depends(db.get_database_session),
@@ -696,23 +697,46 @@ async def extension_transcribe_finalize(
     """Finalize a streaming session: run speaker labeling, persist encounter.
 
     Accepts either a pre-uploaded chunked session (``session_id``) or a legacy
-    full audio blob (``audio`` file upload).  The transcript is always provided
-    by the caller — audio is stored for archival but not re-transcribed.
+    full audio blob (``audio`` file upload).
+
+    By default the caller-supplied ``transcript`` (from the realtime stream) is used.
+    When ``retranscribe`` is set, the assembled audio is re-transcribed by the
+    configured transcription service instead — used for offline/batch captures (no
+    streamed transcript) and for A/B comparison of backends on identical audio.
     """
-    logger.info(f"AUDIT PHI_WRITE user={session.username!r} action=transcribe_finalize session_id={session_id!r}")
-    # If chunks were uploaded incrementally, assemble and clean them up.
+    logger.info(
+        f"AUDIT PHI_WRITE user={session.username!r} action=transcribe_finalize "
+        f"session_id={session_id!r} retranscribe={retranscribe}"
+    )
+    effective_transcript = transcript
+    # If chunks were uploaded incrementally, assemble them (and optionally re-transcribe).
     if session_id:
         assembled = _assemble_chunks(session_id)
-        _cleanup_chunks(session_id)
         logger.info(
             f"Finalize via session_id={session_id!r}: "
             f"{'assembled ' + str(len(assembled)) + ' bytes' if assembled else 'no chunks found'}"
         )
+        if retranscribe and assembled:
+            try:
+                from app.config.ai import transcription_service
+                import io
+                out = await transcription_service.transcribe(
+                    io.BytesIO(assembled), "recording.webm", "audio/webm"
+                )
+                if out and out.transcript:
+                    effective_transcript = out.transcript
+                logger.info(
+                    f"Re-transcribed session {session_id!r} via {getattr(out, 'service', '?')} "
+                    f"({len(effective_transcript)} chars)"
+                )
+            except Exception as e:
+                logger.error(f"Re-transcription failed for {session_id!r}, using provided transcript: {e}")
+        _cleanup_chunks(session_id)
     # else: audio blob provided via legacy path (or no audio at all)
     now = datetime.now(timezone.utc).astimezone()
 
     clinician_name = _get_clinician_name(session.username)
-    turns = _label_transcript(transcript, clinician_name)
+    turns = _label_transcript(effective_transcript, clinician_name)
     labeled_text = _turns_to_plaintext(turns)
 
     try:
@@ -796,6 +820,21 @@ async def upload_audio_chunk(
     if not path.exists():
         path.write_bytes(body)
     return {"ok": True, "session_id": session_id, "seq": seq}
+
+
+@router.get("/transcribe-session-status")
+async def transcribe_session_status(
+    session_id: str = Query(...),
+    session: WebAPISession = Depends(get_current_session),
+) -> dict:
+    """Report which ``seq`` values the server already holds for a session.
+
+    Lets the client resume after an interruption without re-uploading chunks that
+    were already received (the durable sync queue skips these).
+    """
+    d = pathlib.Path(settings.RECORDINGS_FOLDER) / "chunks" / session_id
+    received = sorted(int(p.stem) for p in d.glob("*.bin")) if d.exists() else []
+    return {"session_id": session_id, "received": received}
 
 
 @router.post("/stream-ticket")

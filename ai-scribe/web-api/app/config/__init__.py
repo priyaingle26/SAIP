@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 from typing import Literal, Optional
+from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from functools import lru_cache
 import logging
@@ -21,7 +22,15 @@ import logging
 from dotenv import load_dotenv
 from app.config.package_checks import VLLM_AVAILABLE
 
-load_dotenv(override=True)
+# Load the canonical ai-scribe/.env deterministically, regardless of the directory the
+# server is launched from. A second web-api/.env also exists; without pinning the path,
+# find_dotenv() picks whichever .env is nearest the launch cwd, which silently changes
+# the configured models (e.g. realtime transcribe model) depending on where you run it.
+_AI_SCRIBE_ENV = Path(__file__).resolve().parents[3] / ".env"  # ai-scribe/.env
+if _AI_SCRIBE_ENV.exists():
+    load_dotenv(_AI_SCRIBE_ENV, override=True)
+else:
+    load_dotenv(override=True)
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +91,18 @@ class Settings(BaseSettings):
 
     # WhisperX Configuration
     WHISPERX_DEVICE: str = "cpu"  # Can be "cpu" or "cuda" or "cuda:0", "cuda:1", etc.
+
+    # AWS Transcribe Medical (HIPAA-eligible). When enabled, the AWS Transcribe backend
+    # runs medical transcription jobs (medical vocabulary) with speaker diarization,
+    # instead of standard Transcribe. Used for offline/batch finalize re-transcription
+    # and for A/B comparison against the OpenAI pipeline.
+    AWS_TRANSCRIBE_MEDICAL: bool = False
+    AWS_TRANSCRIBE_SPECIALTY: str = "PRIMARYCARE"   # PRIMARYCARE | CARDIOLOGY | NEUROLOGY | ONCOLOGY | RADIOLOGY | UROLOGY
+    AWS_TRANSCRIBE_TYPE: str = "CONVERSATION"        # CONVERSATION (clinician+patient) | DICTATION
+    AWS_TRANSCRIBE_SHOW_SPEAKER_LABELS: bool = True
+    AWS_TRANSCRIBE_MAX_SPEAKERS: int = 2
+    # Medical jobs require an output S3 bucket; defaults to S3_BUCKET_NAME when unset.
+    AWS_TRANSCRIBE_OUTPUT_BUCKET: str | None = None
 
     AWS_ACCESS_KEY_ID: str | None = None
     AWS_SECRET_ACCESS_KEY: str | None = None

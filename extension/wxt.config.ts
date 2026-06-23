@@ -13,6 +13,7 @@ export default defineConfig({
       'sidePanel',
       'tabs',
       'webNavigation',
+      'alarms',
     ],
     host_permissions: [
       'https://*.crediblebh.com/*',

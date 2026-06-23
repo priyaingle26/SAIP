@@ -203,6 +203,7 @@ export async function finalizeStream(
   transcript: string,
   encounterId?: string,
   patientId?: string,
+  retranscribe = false,
 ): Promise<ApiResponse<FinalizeStreamResponse>> {
   try {
     const token = await getAuthToken();
@@ -217,6 +218,9 @@ export async function finalizeStream(
     }
     if (encounterId) form.append('encounter_id', encounterId);
     if (patientId) form.append('patient_id', patientId);
+    // When set, the backend re-transcribes the assembled audio with the configured
+    // service instead of trusting the streamed transcript (offline/batch + A/B testing).
+    if (retranscribe) form.append('retranscribe', 'true');
 
     const res = await fetch(SAIP_ENDPOINTS.transcribeFinalize, {
       method: 'POST',
@@ -229,6 +233,40 @@ export async function finalizeStream(
     return { success: true, data };
   } catch (err) {
     return { success: false, error: String(err) };
+  }
+}
+
+// ─── Upload one durable audio chunk (binary) ─────────────────────────────────
+// Idempotent on the server for a repeated (session_id, seq), so retries are safe.
+export async function uploadChunk(
+  sessionId: string,
+  seq: number,
+  chunk: Blob,
+): Promise<boolean> {
+  try {
+    const token = await getAuthToken();
+    const res = await fetch(SAIP_ENDPOINTS.transcribeChunk(sessionId, seq), {
+      method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      body: chunk,
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+// ─── Which seq values the server already holds for a session ──────────────────
+// Lets the client resume after an interruption without re-uploading received chunks.
+export async function getSessionReceivedSeqs(sessionId: string): Promise<Set<number>> {
+  try {
+    const headers = await authHeaders();
+    const res = await fetch(SAIP_ENDPOINTS.transcribeSessionStatus(sessionId), { headers });
+    if (!res.ok) return new Set();
+    const data = await res.json();
+    return new Set<number>(Array.isArray(data?.received) ? data.received : []);
+  } catch {
+    return new Set();
   }
 }
 

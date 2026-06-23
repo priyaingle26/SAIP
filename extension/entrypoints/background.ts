@@ -1,8 +1,12 @@
 
-import { transcribeAudio, generateNote, fetchEncounters, finalizeStream, checkStreamingStatus, getStreamTicket } from '../lib/apiClient';
+import { generateNote, fetchEncounters, finalizeStream, checkStreamingStatus, getStreamTicket } from '../lib/apiClient';
 import { verifyToken, getAuthToken } from '../lib/auth';
 import { STORAGE_KEYS, SAIP_ENDPOINTS } from '../lib/constants';
+import { drainAll, setFinalizeHandler } from '../lib/syncQueue';
+import { setSessionMeta, getSessionMeta, type SessionMeta } from '../lib/durableStore';
 import type { ExtensionMessage, Encounter, StreamFinalizedPayload } from '../lib/schemas';
+
+const DRAIN_ALARM = 'saip-drain';
 
 export default defineBackground(() => {
   // Open Side Panel when the action icon is clicked
@@ -21,38 +25,16 @@ export default defineBackground(() => {
     void reinjectContentScripts();
   });
 
-  // ── saip-audio port: receives final audio reference from offscreen ──────────
-  // Two message formats:
-  //   { sessionId, mimeType, allChunksUploaded: true }  — chunked-upload path
-  //   { audioBase64, mimeType, allChunksUploaded: false } — legacy blob fallback
+  // ── saip-audio port: recording stopped, mark session ready to finalize ──────
+  // The offscreen recorder has durably persisted every chunk. We record the finalize
+  // intent (transcript if streamed, otherwise re-transcribe server-side) and kick the
+  // sync queue, which finalizes once all chunks are uploaded — even after reconnect.
   chrome.runtime.onConnect.addListener((port) => {
     if (port.name === 'saip-audio') {
-      port.onMessage.addListener(async (payload: {
-        sessionId?: string;
-        audioBase64?: string;
-        mimeType: string;
-        allChunksUploaded?: boolean;
-        encounterId?: string;
-      }) => {
-        if (streamingTranscript !== null) {
-          // Streaming path: finalize with the pre-streamed transcript
-          await finalizeStreamingSession(
-            payload.allChunksUploaded && payload.sessionId
-              ? payload.sessionId          // chunked path: reference by id
-              : (payload.audioBase64 ?? ''), // fallback: full blob base64
-            payload.mimeType,
-            payload.allChunksUploaded ?? false,
-          );
-        } else {
-          // Batch path: upload and transcribe server-side
-          const pid = await getSelectedPatientId();
-          if (payload.allChunksUploaded && payload.sessionId) {
-            // Batch via already-uploaded chunks: finalize directly by session id
-            await finalizeStreamingSession(payload.sessionId, payload.mimeType, true);
-          } else {
-            await processAudio(payload.audioBase64 ?? '', payload.mimeType, payload.encounterId, pid ?? undefined);
-          }
-        }
+      port.onMessage.addListener(async (payload: { sessionId?: string; mimeType: string }) => {
+        if (!payload.sessionId) return;
+        await markSessionPendingFinalize(payload.sessionId, payload.mimeType);
+        void drainAll();
       });
     }
 
@@ -60,6 +42,20 @@ export default defineBackground(() => {
       handleStreamPort(port);
     }
   });
+
+  // ── Resumable sync wiring ───────────────────────────────────────────────────
+  setFinalizeHandler(finalizeSession);
+  // Periodic heartbeat re-wakes an evicted worker to drain any backlog (min 30s).
+  chrome.alarms.create(DRAIN_ALARM, { periodInMinutes: 0.5 });
+  chrome.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name === DRAIN_ALARM) void drainAll();
+  });
+  // Drain immediately when connectivity returns or a new chunk is persisted.
+  self.addEventListener('online', () => void drainAll());
+  chrome.runtime.onMessage.addListener((message: { type?: string }) => {
+    if (message?.type === 'CHUNK_PERSISTED') void drainAll();
+  });
+  void drainAll(); // resume any backlog left from a previous worker lifetime
 
   // ── Standard message router ────────────────────────────────────────────────
   chrome.runtime.onMessage.addListener(
@@ -230,57 +226,56 @@ async function openRealtimeWs() {
   }
 }
 
-// ─── Finalize streaming session: label + persist ─────────────────────────────
-// audioRef: either a sessionId string (chunked path) or base64-encoded audio (legacy)
-// isSessionId: true when audioRef is a sessionId; false when it is base64 audio
+// ─── Record finalize intent when recording stops ─────────────────────────────
+// Captures the streamed transcript if one was produced online; otherwise flags the
+// session for server-side re-transcription (offline/batch). The actual finalize runs
+// from the sync queue once every chunk has been uploaded.
 
-async function finalizeStreamingSession(
-  audioRef: string,
-  mimeType: string,
-  isSessionId: boolean,
-) {
+async function markSessionPendingFinalize(sessionId: string, mimeType: string) {
   const transcript = streamingTranscript ?? '';
   const patientId = await getSelectedPatientId();
   streamingTranscript = null;
   streamingDeltaBuffer = '';
 
-  if (!transcript) {
-    // Nothing was transcribed — fall through to batch
-    if (!isSessionId) await processAudio(audioRef, mimeType);
-    return;
+  const existing = await getSessionMeta(sessionId);
+  await setSessionMeta({
+    sessionId,
+    mimeType,
+    patientId: patientId ?? undefined,
+    transcript,
+    // No streamed transcript (offline or streaming unavailable) → re-transcribe audio.
+    retranscribe: !transcript,
+    status: 'pending-finalize',
+    createdAt: existing?.createdAt ?? Date.now(),
+  });
+
+  if (transcript) {
+    chrome.runtime.sendMessage({ type: 'TRANSCRIBE_COMPLETE', payload: { transcript } });
   }
+}
 
-  chrome.runtime.sendMessage({ type: 'TRANSCRIBE_COMPLETE', payload: { transcript } });
+// ─── Finalize a fully-uploaded session: label + persist + generate note ──────
+// Returns true on success (the sync queue then deletes the durable session); false to
+// retry on the next drain (e.g. transient network failure / still offline).
 
+async function finalizeSession(meta: SessionMeta): Promise<boolean> {
   try {
-    let audioArg: Blob | string;
-    if (isSessionId) {
-      audioArg = audioRef; // sessionId: backend loads assembled audio
-    } else {
-      // Legacy base64 path: decode to blob
-      const byteChars = atob(audioRef);
-      const bytes = new Uint8Array(byteChars.length);
-      for (let i = 0; i < byteChars.length; i++) bytes[i] = byteChars.charCodeAt(i);
-      audioArg = new Blob([bytes], { type: mimeType });
-    }
-
-    const result = await finalizeStream(audioArg, transcript, undefined, patientId ?? undefined);
-    if (!result.success || !result.data) {
-      chrome.runtime.sendMessage({ type: 'ERROR', error: result.error });
-      return;
-    }
+    const result = await finalizeStream(
+      meta.sessionId,
+      meta.transcript ?? '',
+      undefined,
+      meta.patientId,
+      meta.retranscribe ?? false,
+    );
+    if (!result.success || !result.data) return false;
 
     const { encounterId: eid, transcript: labeled, turns } = result.data;
 
-    const generateResult = await generateNote(eid, labeled, patientId ?? undefined);
-    if (!generateResult.success || !generateResult.data) {
-      chrome.runtime.sendMessage({ type: 'ERROR', error: generateResult.error });
-      return;
-    }
+    const generateResult = await generateNote(eid, labeled, meta.patientId);
+    if (!generateResult.success || !generateResult.data) return false;
 
-    // Task 3.4: Do NOT persist PHI (transcript/note) to chrome.storage.local.
-    // Encounters are persisted server-side; the extension fetches them via /ext-encounters.
-    // We save only non-PHI metadata so the UI can show the session in the list.
+    // Do NOT persist PHI (transcript/note) to chrome.storage.local — server is the system
+    // of record. Save only non-PHI metadata so the UI can list the session.
     await saveEncounterLocally({
       id: eid,
       clientName: 'Current Session',
@@ -293,55 +288,10 @@ async function finalizeStreamingSession(
       payload: { encounterId: eid, transcript: labeled, turns } satisfies StreamFinalizedPayload,
     });
     chrome.runtime.sendMessage({ type: 'GENERATE_COMPLETE', payload: generateResult.data });
+    return true;
   } catch (err) {
     chrome.runtime.sendMessage({ type: 'ERROR', error: String(err) });
-  }
-}
-
-// ─── Batch path (unchanged, also serves as fallback) ─────────────────────────
-
-async function processAudio(audioBase64: string, mimeType: string, encounterId?: string, patientId?: string) {
-  try {
-    const byteChars = atob(audioBase64);
-    const bytes = new Uint8Array(byteChars.length);
-    for (let i = 0; i < byteChars.length; i++) {
-      bytes[i] = byteChars.charCodeAt(i);
-    }
-    const blob = new Blob([bytes], { type: mimeType });
-
-    const transcribeResult = await transcribeAudio(blob, encounterId, patientId);
-    if (!transcribeResult.success || !transcribeResult.data) {
-      chrome.runtime.sendMessage({ type: 'ERROR', error: transcribeResult.error });
-      return;
-    }
-
-    const { encounterId: eid, transcript } = transcribeResult.data;
-    chrome.runtime.sendMessage({
-      type: 'TRANSCRIBE_COMPLETE',
-      payload: { encounterId: eid, transcript },
-    });
-
-    const generateResult = await generateNote(eid, transcript, patientId);
-    if (!generateResult.success || !generateResult.data) {
-      chrome.runtime.sendMessage({ type: 'ERROR', error: generateResult.error });
-      return;
-    }
-
-    // Task 3.4: save only non-PHI metadata to chrome.storage.local;
-    // transcript and note remain server-side only.
-    await saveEncounterLocally({
-      id: eid,
-      clientName: 'Current Session',
-      date: new Date().toISOString(),
-      status: 'generated',
-    });
-
-    chrome.runtime.sendMessage({
-      type: 'GENERATE_COMPLETE',
-      payload: generateResult.data,
-    });
-  } catch (err) {
-    chrome.runtime.sendMessage({ type: 'ERROR', error: String(err) });
+    return false;
   }
 }
 

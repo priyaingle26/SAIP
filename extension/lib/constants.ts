@@ -12,6 +12,8 @@ export const SAIP_ENDPOINTS = {
   transcribeFinalize: `${SAIP_BASE_URL}/transcribe-finalize`,
   transcribeChunk: (sessionId: string, seq: number) =>
     `${SAIP_BASE_URL}/transcribe-chunk?session_id=${encodeURIComponent(sessionId)}&seq=${seq}`,
+  transcribeSessionStatus: (sessionId: string) =>
+    `${SAIP_BASE_URL}/transcribe-session-status?session_id=${encodeURIComponent(sessionId)}`,
   streamTicket: `${SAIP_BASE_URL}/stream-ticket`,
   streamingStatus: `${SAIP_BASE_URL}/streaming-status`,
   generate: `${SAIP_BASE_URL}/generate`,
