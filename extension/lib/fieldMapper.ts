@@ -331,6 +331,114 @@ function fillText(labels: string[], value: string): boolean {
   return true;
 }
 
+// ─── CKEditor / contenteditable rich-text filler ─────────────────────────────
+// Credible Plan Builder Description fields are CKEditor instances. We first try
+// the global CKEDITOR API (sets data server-side). If CKEDITOR is absent we fall
+// back to directly manipulating the contenteditable <div> nearest the label.
+//
+// Label-to-editor mapping: CKEditor names its instances after the underlying
+// <textarea> id/name. The Plan Builder replaces each <textarea> with a CKEditor
+// widget, so we locate the original textarea by label, get its id/name, and
+// look up that CKEDITOR instance.  When no CKEDITOR global exists we walk the
+// DOM for a [contenteditable] sibling/descendant of the label container.
+function fillRichtext(labels: string[], value: string): boolean {
+  let filledAny = false;
+
+  // ── Path 1: Find the underlying textarea by label and set its value ──────────
+  // This updates the textarea value natively in the DOM, which will be synced
+  // to the CKEditor instance via our main-world script.
+  const ta = findElementByLabel<HTMLTextAreaElement>('textarea', labels);
+  if (ta) {
+    setNativeValue(ta, value);
+    // If this is a paired textarea (qnotes_1234), check the corresponding box (q_1234)
+    if (ta.id.startsWith('qnotes_')) {
+      const cbId = 'q_' + ta.id.slice(7);
+      const cb = document.getElementById(cbId) as HTMLInputElement | null;
+      if (cb && !cb.checked) {
+        cb.checked = true;
+        cb.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+    }
+    filledAny = true;
+  }
+
+  // ── Path 2: Raw contenteditable / iframe DOM manipulation ───────────────────
+  // Also try to find any contenteditable iframe or div near the anchor or label
+  // to set its value visually so the user sees the filled content immediately.
+  const anchor = findTextAnchor(labels);
+  if (anchor) {
+    let container: HTMLElement | null = anchor;
+    let foundEditable = false;
+
+    // Helper to check for contenteditable or iframe-wrapped contenteditable
+    const setEditableValue = (containerEl: HTMLElement): boolean => {
+      // Direct contenteditable
+      const editable = containerEl.querySelector<HTMLElement>('[contenteditable="true"]');
+      if (editable) {
+        editable.innerText = value;
+        editable.dispatchEvent(new Event('input', { bubbles: true }));
+        editable.dispatchEvent(new Event('change', { bubbles: true }));
+        return true;
+      }
+
+      // CKEditor iframe
+      const iframes = Array.from(containerEl.querySelectorAll<HTMLIFrameElement>('iframe'));
+      for (const iframe of iframes) {
+        try {
+          const doc = iframe.contentDocument || iframe.contentWindow?.document;
+          if (doc) {
+            const body = doc.querySelector<HTMLElement>('[contenteditable="true"]') || doc.body;
+            if (body) {
+              body.innerText = value;
+              body.dispatchEvent(new Event('input', { bubbles: true }));
+              body.dispatchEvent(new Event('change', { bubbles: true }));
+              return true;
+            }
+          }
+        } catch (e) {
+          console.warn('[SAIP] Cannot access iframe contentDocument:', e);
+        }
+      }
+      return false;
+    };
+
+    // Look in parent containers up to 5 levels
+    for (let i = 0; i < 5 && container; i++) {
+      if (setEditableValue(container)) {
+        foundEditable = true;
+        break;
+      }
+      container = container.parentElement;
+    }
+
+    // Fallback: scan next siblings of the anchor
+    if (!foundEditable) {
+      let sib = anchor.nextElementSibling as HTMLElement | null;
+      for (let i = 0; i < 8 && sib; i++) {
+        if (sib.getAttribute('contenteditable') === 'true') {
+          sib.innerText = value;
+          sib.dispatchEvent(new Event('input', { bubbles: true }));
+          sib.dispatchEvent(new Event('change', { bubbles: true }));
+          foundEditable = true;
+          break;
+        }
+        if (setEditableValue(sib)) {
+          foundEditable = true;
+          break;
+        }
+        sib = sib.nextElementSibling as HTMLElement | null;
+      }
+    }
+
+    if (foundEditable) {
+      filledAny = true;
+    }
+  }
+
+  return filledAny;
+}
+
+
 // ─── Date input (<input type="date">) finder ─────────────────────────────────
 // Native date inputs require a YYYY-MM-DD value regardless of the locale shown
 // in the picker. We accept whatever the AI returns (ISO, US, or a parseable
@@ -836,6 +944,9 @@ export function applyFormAutofill(
         if (btn) scoredClicks.push(btn);
         break;
       }
+      case 'richtext':
+        ok = fillRichtext(field.labels, value);
+        break;
       case 'checkbox-group':
         if (field.key === 'participants') {
           ok = applyParticipantCheckboxes(value) > 0;
@@ -869,7 +980,11 @@ export function applyFormAutofill(
     })
     .map((f) => f.key);
 
+  // Trigger CKEditor sync in the main world
+  window.dispatchEvent(new CustomEvent('SAIP_SYNC_CKEDITOR'));
+
   const labelsSeen = Array.from(textareaLabelMap.keys());
 
   return { filled, missed, manualRequired, labelsSeen };
 }
+

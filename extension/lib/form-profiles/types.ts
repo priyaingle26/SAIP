@@ -14,7 +14,8 @@ export type FieldType =
   | 'checkbox-group' // flat, non-q_ multi-select checkboxes
   | 'mse-group' // checkboxes sharing one q_ id, multi-select within the group
   | 'scored-widget' // x_ button-group sharing one id (0/1/2/3), one button clicked by value
-  | 'scored-options'; // AUDIT-C style: each option is its own x_ button (unique id), value=score
+  | 'scored-options' // AUDIT-C style: each option is its own x_ button (unique id), value=score
+  | 'richtext'; // CKEditor / contenteditable div (Credible Plan Builder Description fields)
 
 export interface FieldDef {
   key: string;

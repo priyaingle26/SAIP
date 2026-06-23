@@ -550,7 +550,7 @@ async def transcribe_stream_ws(
         else:
             turn_detection = {
                 "type": "server_vad",
-                "threshold": 0.5,
+                "threshold": 0.8,
                 "prefix_padding_ms": 300,
                 "silence_duration_ms": settings.REALTIME_VAD_SILENCE_MS,
             }
@@ -1566,6 +1566,147 @@ FORM_SCHEMAS["Physical Health Assess"] = {
     ),
     "rosComments": "Narrative summary of current review of systems findings and any changes noted. Empty string if none.",
 }
+
+FORM_SCHEMAS["person-centered-recovery-plan-mh"] = {
+    # ── ① Plan header ────────────────────────────────────────────────────────────
+    "planLength": (
+        "Length of this recovery plan. One of: 90 Days, 180 Days. "
+        "Default to '90 Days' if not specified."
+    ),
+    "planType": (
+        "Type of this recovery plan. One of: Initial, Review, Revision. "
+        "Choose Initial for new plans, Review for periodic reviews, Revision for mid-cycle changes. "
+        "Default to 'Initial' if not stated."
+    ),
+
+    # ── ② Program / Level of Care ────────────────────────────────────────────────
+    "loc": (
+        "Level of Care (LOC) narrative for this plan. Describe the appropriate level of care "
+        "for this individual (e.g., outpatient community-based). Derived from the transcript."
+    ),
+    "programLevelOfCare": (
+        "The program or level-of-care selection from the dropdown "
+        "(e.g., Person-Centered Plan AMH). Match the closest available option."
+    ),
+
+    # ── ③ Individual Strengths ───────────────────────────────────────────────────
+    "individualStrengths": (
+        "Narrative description of the individual's strengths, personal assets, "
+        "support systems, and resources that support their recovery. "
+        "Extract from the transcript."
+    ),
+
+    # ── ④ Barriers to Recovery ───────────────────────────────────────────────────
+    "barriersDescription": (
+        "Narrative description of barriers to recovery such as housing instability, "
+        "transportation challenges, financial issues, lack of social support, "
+        "mental health symptoms, or other obstacles. Derived from the transcript."
+    ),
+
+    # ── ⑤ Recovery Goal ──────────────────────────────────────────────────────────
+    "goalDescription": (
+        "Full narrative description of the individual's primary recovery goal — "
+        "what they want to achieve. Should be person-centered and strengths-based."
+    ),
+    "goalEstablishedDate": (
+        "Date the recovery goal was established. Format: YYYY-MM-DD. "
+        "Use today's date or the session date if not explicitly stated."
+    ),
+    "goalTargetDate": (
+        "Target date for achieving the recovery goal. Format: YYYY-MM-DD. "
+        "Typically 90 or 180 days from established date matching the plan length."
+    ),
+    "recoveryGoalReviewDate": (
+        "Date of next scheduled review of the recovery goal. Format: YYYY-MM-DD. "
+        "Typically within the plan cycle."
+    ),
+    "recoveryGoalReviewStatus": (
+        "Recovery Goal Review Status dropdown value. "
+        "Choose from available options such as: On Track, Achieved, Modified, Not Met. "
+        "Empty string if no review has occurred yet."
+    ),
+    "goalDocumentationOfProgress": (
+        "Narrative documenting progress toward the recovery goal and any challenges encountered. "
+        "Leave empty string if no progress documentation was discussed."
+    ),
+
+    # ── ⑥ Recovery Objective ─────────────────────────────────────────────────────
+    "objectiveDescription": (
+        "Specific, measurable recovery objective statement — a concrete short-term "
+        "step toward the broader goal. Often starts with 'In the next 90 days, [Name] will...'"
+    ),
+    "objectiveStatus": (
+        "Objective status dropdown value. One of: Active, Completed, Discontinued, Revised. "
+        "Default to 'Active' for new plans."
+    ),
+    "recoveryObjectiveReviewDate": (
+        "Next review date for the recovery objective. Format: YYYY-MM-DD."
+    ),
+    "recoveryObjectiveReviewStatus": (
+        "Recovery Objective Review Status dropdown value. Choose from available options. "
+        "Empty string if not yet reviewed."
+    ),
+
+    # ── ⑦ Skills Training Intervention ───────────────────────────────────────────
+    "skillsTrainingDescription": (
+        "Narrative description for the Skills Training intervention. "
+        "Describe what skills training will be provided, using evidence-based curricula, "
+        "instruction/modeling/role-play methods, and what the individual will do (homework, practice). "
+        "Use professional clinical language. Fill in [SAI NAME] and [INDIVIDUAL NAME] generically."
+    ),
+    "skillsTrainingIntervention": (
+        "Skills Training intervention dropdown value. "
+        "Select the closest match (e.g., 'Skills Training - Individual')."
+    ),
+    "skillsTrainingFrequency": (
+        "Frequency for skills training sessions. "
+        "Select from dropdown (e.g., Weekly, Twice a Month, Monthly)."
+    ),
+    "skillsTrainingDuration": (
+        "Duration of each skills training session. "
+        "Select from dropdown (e.g., 1 hour, 30 minutes, 45 minutes)."
+    ),
+
+    # ── ⑧ Routine Case Management Intervention ────────────────────────────────────
+    "caseManagementDescription": (
+        "Narrative description for the Routine Case Management intervention. "
+        "Describe how the case manager will assist the individual in identifying and linking "
+        "to community resources, and what the individual will do to participate."
+    ),
+
+    # ── ⑨ Peer-to-Peer Services Intervention ──────────────────────────────────────
+    "peerToPeerDescription": (
+        "Narrative description for the Peer-to-Peer Services intervention. "
+        "Describe the peer support services and how the individual will voluntarily "
+        "participate to support their wellness and recovery."
+    ),
+
+    # ── ⑩ E&M Intervention ────────────────────────────────────────────────────────
+    "emDescription": (
+        "Narrative description for the Evaluation and Management (E&M) intervention. "
+        "Describe how the prescriber will provide medication management and what "
+        "the individual will do (take medications as prescribed, provide feedback on "
+        "effectiveness and side effects)."
+    ),
+
+    # ── ⑪ Discharge Plan ─────────────────────────────────────────────────────────
+    "dischargePlan": (
+        "Narrative description of the discharge plan. Describe when/under what conditions "
+        "the individual will be discharged and what community resources they will be linked to. "
+        "Example: '[Individual] will be discharged once they reach their recovery goal and "
+        "will be linked to a community resource outside of the HHSC system.'"
+    ),
+
+    # ── ⑫ Acknowledgements ───────────────────────────────────────────────────────
+    "acknowledgements": (
+        "Any specific acknowledgement narrative beyond the standard boilerplate "
+        "(community resources list, rights review, plan explanation). "
+        "Empty string if standard boilerplate language is sufficient."
+    ),
+}
+
+
+
 
 
 class EvaluationAnswersRequest(BaseModel):
