@@ -9,7 +9,8 @@
 
 import {
   listActiveSessions,
-  getPendingChunks,
+  getPendingSeqs,
+  getChunkBlob,
   markUploaded,
   countPending,
   deleteSession,
@@ -40,13 +41,16 @@ function delay(ms: number): Promise<void> {
 async function drainSession(meta: SessionMeta): Promise<boolean> {
   // Skip chunks the server already holds (resume after an interruption without re-sending).
   const received = await getSessionReceivedSeqs(meta.sessionId);
-  const pending = await getPendingChunks(meta.sessionId);
+  // Iterate seq numbers only; decrypt+load one chunk at a time to keep memory bounded.
+  const seqs = await getPendingSeqs(meta.sessionId);
 
-  for (const { seq, blob } of pending) {
+  for (const seq of seqs) {
     if (received.has(seq)) {
       await markUploaded(meta.sessionId, seq);
       continue;
     }
+    const blob = await getChunkBlob(meta.sessionId, seq);
+    if (!blob) continue; // chunk vanished (already cleaned up)
     let ok = false;
     for (let attempt = 0; attempt < MAX_ATTEMPTS && !ok; attempt++) {
       if (attempt > 0) await delay(BASE_DELAY_MS * 2 ** (attempt - 1));

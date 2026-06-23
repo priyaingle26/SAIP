@@ -151,22 +151,31 @@ function allChunks(sessionId: string): Promise<ChunkRecord[]> {
   );
 }
 
-/** Decrypted, seq-ordered chunks for a session that have not yet been uploaded. */
-export async function getPendingChunks(sessionId: string): Promise<PendingChunk[]> {
-  const key = await getKey();
-  const records = (await allChunks(sessionId))
+/**
+ * Seq numbers of not-yet-uploaded chunks, ascending. Reads metadata only — does NOT
+ * decrypt or load chunk bodies, so the caller can process one chunk at a time and keep
+ * memory bounded (decrypting the whole backlog at once can OOM the worker).
+ */
+export async function getPendingSeqs(sessionId: string): Promise<number[]> {
+  return (await allChunks(sessionId))
     .filter((r) => r.uploaded === 0)
-    .sort((a, b) => a.seq - b.seq);
-  const out: PendingChunk[] = [];
-  for (const r of records) {
-    const plaintext = await crypto.subtle.decrypt(
-      { name: 'AES-GCM', iv: new Uint8Array(r.iv) },
-      key,
-      r.ciphertext,
-    );
-    out.push({ seq: r.seq, blob: new Blob([plaintext]) });
-  }
-  return out;
+    .map((r) => r.seq)
+    .sort((a, b) => a - b);
+}
+
+/** Decrypt a single chunk to a Blob. Returns null if the chunk is gone. */
+export async function getChunkBlob(sessionId: string, seq: number): Promise<Blob | null> {
+  const rec = await tx<ChunkRecord | undefined>(CHUNKS_STORE, 'readonly', (s) =>
+    s.get([sessionId, seq]),
+  );
+  if (!rec) return null;
+  const key = await getKey();
+  const plaintext = await crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv: new Uint8Array(rec.iv) },
+    key,
+    rec.ciphertext,
+  );
+  return new Blob([plaintext]);
 }
 
 export async function countPending(sessionId: string): Promise<number> {

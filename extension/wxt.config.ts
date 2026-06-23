@@ -17,10 +17,8 @@ export default defineConfig({
     ],
     host_permissions: [
       'https://*.crediblebh.com/*',
-      'https://*.*.crediblebh.com/*',
-      'https://*.*.*.crediblebh.com/*',
       'https://*.thecrediblesolution.com/*',
-      'https://*.*.thecrediblesolution.com/*',
+      'https://*.nip.io/*',
       'http://localhost:*/*',
     ],
     side_panel: {

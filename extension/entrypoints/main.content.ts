@@ -1,10 +1,8 @@
 export default defineContentScript({
   matches: [
+    // `*.` already covers multi-level subdomains; `*.*.` is an invalid Chrome wildcard.
     'https://*.crediblebh.com/*',
-    'https://*.*.crediblebh.com/*',
-    'https://*.*.*.crediblebh.com/*',
     'https://*.thecrediblesolution.com/*',
-    'https://*.*.thecrediblesolution.com/*',
   ],
   world: 'MAIN',
   allFrames: true,

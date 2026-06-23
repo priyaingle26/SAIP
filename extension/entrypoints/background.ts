@@ -1,5 +1,5 @@
 
-import { generateNote, fetchEncounters, finalizeStream, checkStreamingStatus, getStreamTicket } from '../lib/apiClient';
+import { transcribeAudio, generateNote, fetchEncounters, finalizeStream, checkStreamingStatus, getStreamTicket } from '../lib/apiClient';
 import { verifyToken, getAuthToken } from '../lib/auth';
 import { STORAGE_KEYS, SAIP_ENDPOINTS } from '../lib/constants';
 import { drainAll, setFinalizeHandler } from '../lib/syncQueue';
@@ -25,16 +25,26 @@ export default defineBackground(() => {
     void reinjectContentScripts();
   });
 
-  // ── saip-audio port: recording stopped, mark session ready to finalize ──────
-  // The offscreen recorder has durably persisted every chunk. We record the finalize
-  // intent (transcript if streamed, otherwise re-transcribe server-side) and kick the
-  // sync queue, which finalizes once all chunks are uploaded — even after reconnect.
+  // ── saip-audio port: audio ready for processing ─────────────────────────────
+  // Two message shapes:
+  //   { sessionId, mimeType }            — live recording: chunks are durably persisted;
+  //                                         mark finalize intent and let the sync queue run.
+  //   { audioBase64, mimeType, encounterId? } — file upload: transcribe the blob server-side.
   chrome.runtime.onConnect.addListener((port) => {
     if (port.name === 'saip-audio') {
-      port.onMessage.addListener(async (payload: { sessionId?: string; mimeType: string }) => {
-        if (!payload.sessionId) return;
-        await markSessionPendingFinalize(payload.sessionId, payload.mimeType);
-        void drainAll();
+      port.onMessage.addListener(async (payload: {
+        sessionId?: string;
+        audioBase64?: string;
+        mimeType: string;
+        encounterId?: string;
+      }) => {
+        if (payload.sessionId) {
+          await markSessionPendingFinalize(payload.sessionId, payload.mimeType);
+          void drainAll();
+        } else if (payload.audioBase64) {
+          const pid = await getSelectedPatientId();
+          await processAudio(payload.audioBase64, payload.mimeType, payload.encounterId, pid ?? undefined);
+        }
       });
     }
 
@@ -231,6 +241,42 @@ async function openRealtimeWs() {
   } catch {
     streamingTranscript = null;
     realtimeWs = null;
+  }
+}
+
+// ─── Batch path: transcribe an uploaded audio file server-side ───────────────
+
+async function processAudio(audioBase64: string, mimeType: string, encounterId?: string, patientId?: string) {
+  try {
+    const byteChars = atob(audioBase64);
+    const bytes = new Uint8Array(byteChars.length);
+    for (let i = 0; i < byteChars.length; i++) bytes[i] = byteChars.charCodeAt(i);
+    const blob = new Blob([bytes], { type: mimeType });
+
+    const transcribeResult = await transcribeAudio(blob, encounterId, patientId);
+    if (!transcribeResult.success || !transcribeResult.data) {
+      chrome.runtime.sendMessage({ type: 'ERROR', error: transcribeResult.error });
+      return;
+    }
+
+    const { encounterId: eid, transcript } = transcribeResult.data;
+    chrome.runtime.sendMessage({ type: 'TRANSCRIBE_COMPLETE', payload: { encounterId: eid, transcript } });
+
+    const generateResult = await generateNote(eid, transcript, patientId);
+    if (!generateResult.success || !generateResult.data) {
+      chrome.runtime.sendMessage({ type: 'ERROR', error: generateResult.error });
+      return;
+    }
+
+    await saveEncounterLocally({
+      id: eid,
+      clientName: 'Current Session',
+      date: new Date().toISOString(),
+      status: 'generated',
+    });
+    chrome.runtime.sendMessage({ type: 'GENERATE_COMPLETE', payload: generateResult.data });
+  } catch (err) {
+    chrome.runtime.sendMessage({ type: 'ERROR', error: String(err) });
   }
 }
 

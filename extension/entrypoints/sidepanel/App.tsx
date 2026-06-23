@@ -9,7 +9,7 @@ import TranscriptView from '../../components/TranscriptView';
 import GeneratedNoteView from '../../components/GeneratedNoteView';
 import EncounterHistory from '../../components/EncounterHistory';
 import FormAssistant from '../../components/FormAssistant';
-import { searchPatients, createPatient, fetchPatientProfile, confirmProfileField, getPatient, fetchEncounters } from '../../lib/apiClient';
+import { searchPatients, createPatient, fetchPatientProfile, confirmProfileField, getPatient, fetchEncounters, transcribeAudio, generateNote } from '../../lib/apiClient';
 import {
   TabBar, Button, Banner, Spinner, Divider,
   LogOutIcon, FileTextIcon, HistoryIcon, MicIcon, AlertIcon, UploadIcon,
@@ -336,8 +336,10 @@ export default function App() {
   }, [isStreaming]);
 
   const handleFileUpload = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
+    const input = event.target;
+    const file = input.files?.[0];
     if (!file) return;
+    input.value = ''; // allow re-selecting the same file later
 
     setIsRecording(false);
     setIsProcessing(true);
@@ -348,20 +350,35 @@ export default function App() {
     setLabeledTurns([]);
     setShowLabeledTranscript(false);
 
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      const result = reader.result as string;
-      const base64 = result.split(',')[1];
-      const mime = file.type || 'audio/webm';
-      const port = chrome.runtime.connect({ name: 'saip-audio' });
-      port.postMessage({ audioBase64: base64, mimeType: mime });
-    };
-    reader.onerror = () => {
+    try {
+      // Upload the file directly as multipart — streams the blob to the server.
+      // (The old path base64-encoded the whole file and sent it through a Chrome port
+      // message, which OOM-crashed the worker for large files.)
+      const tr = await transcribeAudio(file);
+      if (!tr.success || !tr.data) {
+        setProcessingError(tr.error ?? 'Transcription failed');
+        setIsProcessing(false);
+        return;
+      }
+      setCurrentEncounterId(tr.data.encounterId);
+      setTranscript(tr.data.transcript);
+      setProcessingStep('Generating clinical note…');
+
+      const gen = await generateNote(tr.data.encounterId, tr.data.transcript);
+      if (!gen.success || !gen.data) {
+        setProcessingError(gen.error ?? 'Note generation failed');
+        setIsProcessing(false);
+        return;
+      }
+      setGeneratedNote(gen.data.note);
+      setProcessingStep('');
       setIsProcessing(false);
-      setProcessingError('Failed to read file');
-    };
-    reader.readAsDataURL(file);
-    event.target.value = '';
+      setActiveTab('note');
+      loadEncounters();
+    } catch (err) {
+      setProcessingError(String(err));
+      setIsProcessing(false);
+    }
   }, []);
 
   function handleSelectEncounter(encounter: Encounter) {
