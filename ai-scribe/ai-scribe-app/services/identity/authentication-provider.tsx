@@ -55,6 +55,20 @@ export const AuthenticationProvider = ({
     }
   };
 
+  // Mirror the active token into localStorage under the key the patients API
+  // client (services/web-api/patients.ts) reads. That module was written for the
+  // extension context (which stores its token as 'saip_auth_token'); in the web
+  // app nothing else populates it, so /patients/* would otherwise send a stale or
+  // empty token and get 401. Keep it in sync with the authenticated session.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (authentication.state === "Authenticated" && authentication.token) {
+      localStorage.setItem("saip_auth_token", authentication.token);
+    } else if (authentication.state === "Unauthenticated" || authentication.state === "Failed") {
+      localStorage.removeItem("saip_auth_token");
+    }
+  }, [authentication]);
+
   useEffect(() => {
     if (authentication.state === "Unauthenticated" && !window.location.pathname.startsWith('/login')) {
       

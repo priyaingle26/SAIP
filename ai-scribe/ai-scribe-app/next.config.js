@@ -4,7 +4,7 @@ let nextConfig = {
   // Add this to ensure proper asset prefixing
   assetPrefix: process.env.NODE_ENV === 'production' ? undefined : '',
   turbopack: {},
-  allowedDevOrigins: ['192.168.1.11', 'localhost'],
+  allowedDevOrigins: ['192.168.1.11', '192.168.29.130', 'localhost'],
   experimental: {
     proxyTimeout: 300 * 1000,
     // Temporarily disabled - incompatible with Next.js 15.5.x
@@ -92,7 +92,7 @@ if (process.env.NODE_ENV === "development") {
   const developmentCSPSettings = `
   default-src 'self' 'unsafe-inline' 'unsafe-eval' blob: data:;
   object-src 'none';
-  connect-src 'self' http://localhost:8000 ws://localhost:4000 http://192.168.1.11:8000 ws://192.168.1.11:4000;
+  connect-src 'self' http://localhost:8000 ws://localhost:4000 http://192.168.1.11:8000 ws://192.168.1.11:4000 http://192.168.29.130:8000 ws://192.168.29.130:4000;
   frame-ancestors 'self';
   `;
 

@@ -137,3 +137,64 @@ of streaming, so it can be added later without changing the extension.
 No schema changes needed. No new dependencies. The batch fallback path is
 unchanged. If `turns_json` is absent (e.g. fallback from batch), labeling still
 works on the raw transcript string.
+
+---
+
+## Long-recording architecture (secure-long-recording change)
+
+Three problems were solved together. All ship behind the existing batch fallback.
+
+### Chunked archive upload (D2)
+
+`offscreen/recorder.ts` uses `CHUNK_TIMESLICE_MS = 3000` (raised from 1 s) and
+POSTs each `ondataavailable` chunk as **binary** directly to
+`POST /transcribe-chunk?session_id=…&seq=N` — no base64, no accumulation in
+`audioChunks[]`. Auth token is read from `chrome.storage.local`.
+
+On failure, the chunk is pushed into `fallbackChunks[]` and the recorder
+switches to the existing single-blob path for the remainder of the session.
+
+On stop, the offscreen sends `{ sessionId, mimeType, allChunksUploaded: true }`
+over `saip-audio` (happy path) or `{ audioBase64, mimeType, allChunksUploaded: false }`
+(fallback). `background.ts` routes accordingly.
+
+`/transcribe-finalize` now accepts `session_id` form field (no audio blob needed);
+the backend assembles chunks in `seq` order from
+`.data/recordings/chunks/{session_id}/` and cleans up after assembly.
+
+### Upstream session rotation (D1)
+
+`_relay_session` (in `extension_api.py`) is now parameterized with
+`rotation_timeout: float | None`. A background task sets `rotate_flag["pending"]`
+after `ROTATION_INTERVAL_S` seconds (default 1500 = 25 min, well under the
+~30-min OpenAI limit). At the **next** server-VAD `completed` event (a clean
+utterance boundary), `openai_to_client` sets `seam_reached` and returns.
+`client_to_openai` exits on the next audio frame. `_relay_session` returns
+`"rotate"` to the caller.
+
+`transcribe_stream_ws` wraps the relay in a `while True` loop: on `"rotate"`,
+the `async with ws_lib.connect(…)` block exits (closing the old upstream), and
+the loop immediately opens a fresh OpenAI connection. The **client WebSocket
+stays open throughout** — the extension sees nothing.
+
+A seam-level de-dup (`last_completed_norm`) drops an exact-repeat utterance that
+would otherwise appear twice if the overlap emitted it on both connections.
+
+To test rotation without waiting 25 min: `ROTATION_INTERVAL_S=30` in `.env`.
+
+### PHI protection (D3)
+
+- **Auth off the URL**: `POST /stream-ticket` issues a 60-second single-use
+  token. `background.ts` calls `getStreamTicket()` before opening the WS and
+  uses `?ticket=…` instead of `?token=…`. Falls back to `?token=` if the
+  ticket endpoint is unreachable.
+- **Local PHI minimized**: `background.ts` no longer writes `transcript` or
+  `generatedNote` to `chrome.storage.local`. Only non-PHI metadata (id, date,
+  status) is stored locally; full encounter content is fetched from
+  `/ext-encounters/{id}` on demand.
+- **Audit trail**: `ext_get_encounter` and `extension_transcribe_finalize` emit
+  structured `AUDIT PHI_READ/PHI_WRITE` log lines (redirect to an audit sink
+  in production).
+- **At-rest encryption + BAA**: operational gate — use S3 with SSE-256 or
+  managed database encryption; deploy against OpenAI enterprise or Azure OpenAI
+  endpoints covered by a signed BAA. Document in your deployment runbook.

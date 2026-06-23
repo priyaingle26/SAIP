@@ -17,19 +17,25 @@ sqids==0.5.0
 SQLAlchemy==2.0.36
 uvicorn==0.32.0
 numpy>=2.0.0
-transformers>=4.37.0
-librosa>=0.10.0
-numba>=0.56.0
-llvmlite>=0.39.0
-whisperx>=3.2.0
-speechbrain>=0.5.14
-pyannote.audio>=3.0.0
-faster-whisper>=0.10.0
 httpx>=0.27.0
 websockets>=12.0
-matplotlib>=3.5.0
 psutil>=5.9.0
 python-magic>=0.4.27
+
+# Local WhisperX / pyannote ASR stack — NOT needed when TRANSCRIPTION_SERVICE
+# is OpenAI Whisper (cloud). These pull in torch (~2GB+) and download model
+# weights at runtime. The WhisperX service imports are guarded behind a
+# try/except, so the app runs fine without them. Re-enable only for local
+# WhisperX transcription.
+# transformers>=4.37.0
+# librosa>=0.10.0
+# numba>=0.56.0
+# llvmlite>=0.39.0
+# whisperx>=3.2.0
+# speechbrain>=0.5.14
+# pyannote.audio>=3.0.0
+# faster-whisper>=0.10.0
+# matplotlib>=3.5.0
 # ffmpeg-python>=0.2.0  # Python wrapper for ffmpeg
 # onnxruntime>=1.14.0   # WhisperX dependency
 # torch>=2.5.0,<3.0.0   # CPU version by default
