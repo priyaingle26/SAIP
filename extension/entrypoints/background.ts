@@ -94,6 +94,7 @@ async function reinjectContentScripts() {
           await chrome.scripting.executeScript({
             target: { tabId: tab.id, allFrames: cs.all_frames ?? false },
             files: cs.js,
+            world: (cs as any).world as chrome.scripting.ExecutionWorld | undefined,
           });
         } catch {
           // Tab may be discarded or disallow injection — ignore and continue.
@@ -193,16 +194,23 @@ async function openRealtimeWs() {
     realtimeWs.onmessage = (ev) => {
       try {
         const event = JSON.parse(ev.data as string) as { type: string; text?: string; message?: string };
-        if (event.type === 'delta' && event.text) {
-          streamingDeltaBuffer += event.text;
-          chrome.runtime.sendMessage({ type: 'STREAM_DELTA', payload: { delta: event.text } });
-        } else if (event.type === 'completed' && event.text) {
+        
+        let safeText = event.text;
+        if (safeText) {
+          // Keep only standard letters, numbers, whitespace, and basic punctuation
+          safeText = safeText.replace(/[^a-zA-Z0-9\s.,!?'"()\-:;“”‘’]/g, '');
+        }
+
+        if (event.type === 'delta' && safeText) {
+          streamingDeltaBuffer += safeText;
+          chrome.runtime.sendMessage({ type: 'STREAM_DELTA', payload: { delta: safeText } });
+        } else if (event.type === 'completed' && safeText) {
           // Commit utterance to assembled transcript
           if (streamingTranscript !== null) {
-            streamingTranscript += (streamingTranscript ? ' ' : '') + event.text;
+            streamingTranscript += (streamingTranscript ? ' ' : '') + safeText;
           }
           streamingDeltaBuffer = '';
-          chrome.runtime.sendMessage({ type: 'STREAM_COMPLETED', payload: { completed: event.text } });
+          chrome.runtime.sendMessage({ type: 'STREAM_COMPLETED', payload: { completed: safeText } });
         } else if (event.type === 'error') {
           chrome.runtime.sendMessage({ type: 'STREAM_ERROR', error: event.message ?? 'Stream error' });
         }

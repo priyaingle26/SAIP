@@ -20,7 +20,7 @@ class FileValidator:
     
     # Allowed MIME types and extensions
     ALLOWED_AUDIO_TYPES = {
-        'audio/mpeg': ['.mp3'],
+        'audio/mpeg': ['.mp3', '.mpeg', '.mpga'],
         'audio/mp4': ['.m4a', '.mp4'],
         'audio/wav': ['.wav'],
         'audio/x-wav': ['.wav'],
@@ -99,9 +99,9 @@ class FileValidator:
     def _is_likely_audio_file(file_header: bytes, file_ext: str) -> bool:
         """Check if file header suggests it's an audio file based on common signatures"""
         # Common audio file signatures
-        if file_ext in ['.mp3']:
-            # MP3 files often start with ID3 tags or frame sync
-            return file_header.startswith(b'ID3') or file_header.startswith(b'\xff\xfb') or file_header.startswith(b'\xff\xf3') or file_header.startswith(b'\xff\xf2')
+        if file_ext in ['.mp3', '.mpeg', '.mpga']:
+            # MP3/MPEG files often start with ID3 tags or frame sync
+            return file_header.startswith(b'ID3') or file_header.startswith(b'\xff\xfb') or file_header.startswith(b'\xff\xf3') or file_header.startswith(b'\xff\xf2') or file_header.startswith(b'\x00\x00\x01\xba')
         elif file_ext in ['.webm']:
             # WebM files start with EBML signature
             return file_header.startswith(b'\x1a\x45\xdf\xa3')
