@@ -76,6 +76,9 @@ class Settings(BaseSettings):
     # gpt-realtime-whisper does NOT support server VAD and needs the manual-commit
     # path below; it is kept as an alternative but is lower accuracy for this use.
     REALTIME_TRANSCRIPTION_MODEL: str = "gpt-4o-transcribe"
+    # Live-transcription language. None/empty = auto-detect (supports all languages). Set an
+    # ISO-639-1 code (e.g. "en", "es") only to force a single language.
+    REALTIME_TRANSCRIPTION_LANGUAGE: str | None = None
     # Latency/quality tradeoff for live partial transcripts (gpt-realtime-whisper only).
     # Lower = earlier partial text, higher = more context before emitting.
     # Allowed: minimal | low | medium | high | xhigh

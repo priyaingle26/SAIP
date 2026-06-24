@@ -646,7 +646,10 @@ async def transcribe_stream_ws(
     rotation_interval = settings.ROTATION_INTERVAL_S
 
     def _session_update_msg() -> str:
-        transcription_cfg: dict = {"model": model, "language": "en"}
+        # Omit `language` to auto-detect (supports all languages); set it only to force one.
+        transcription_cfg: dict = {"model": model}
+        if settings.REALTIME_TRANSCRIPTION_LANGUAGE:
+            transcription_cfg["language"] = settings.REALTIME_TRANSCRIPTION_LANGUAGE
         if is_whisper:
             transcription_cfg["delay"] = settings.REALTIME_TRANSCRIPTION_DELAY
             turn_detection = None
