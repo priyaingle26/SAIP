@@ -495,6 +495,7 @@ export default function MobileApp() {
     if (!file) return;
     setIsRecording(false); setIsProcessing(true); setProcessingStep("Uploading & transcribing…");
     setTranscript(""); setGeneratedNote(null); setEditedNoteContent(""); setIsEditingNote(false); setProcessingError("");
+    setNotesByLanguage({}); setSelectedLanguage("en");
     await processAudioBlob(file, file.type || "audio/webm");
     event.target.value = "";
   }, [token]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -528,8 +529,13 @@ export default function MobileApp() {
       });
       if (!res.ok) throw new Error("Note generation failed");
       const data = await res.json();
-      setGeneratedNote(data.note);
-      setEditedNoteContent(data.note.raw);
+      const map: Record<string, string> = data.notesByLanguage ?? {};
+      const primary: string = data.primaryLanguage ?? "en";
+      setNotesByLanguage(map);
+      setSelectedLanguage(primary);
+      const note = map[primary] ? { raw: map[primary] } : data.note;
+      setGeneratedNote(note);
+      setEditedNoteContent(note.raw);
       setActiveTab("note");
       void fetchEncounters(token);
     } catch (e: unknown) {

@@ -9,7 +9,7 @@ import TranscriptView from '../../components/TranscriptView';
 import GeneratedNoteView from '../../components/GeneratedNoteView';
 import EncounterHistory from '../../components/EncounterHistory';
 import FormAssistant from '../../components/FormAssistant';
-import { searchPatients, createPatient, fetchPatientProfile, confirmProfileField, getPatient, fetchEncounters, transcribeAudio, generateNote } from '../../lib/apiClient';
+import { searchPatients, createPatient, fetchPatientProfile, confirmProfileField, getPatient, fetchEncounters, fetchEncounter, transcribeAudio, generateNote } from '../../lib/apiClient';
 import {
   TabBar, Button, Banner, Spinner, Divider,
   LogOutIcon, FileTextIcon, HistoryIcon, MicIcon, AlertIcon, UploadIcon,
@@ -524,6 +524,8 @@ export default function App() {
     setProcessingStep('Uploading & transcribing audio…');
     setTranscript('');
     setGeneratedNote(null);
+    setNotesByLanguage({});      // clear stale language variants from a prior session
+    setSelectedLanguage('en');
     setProcessingError('');
     setLabeledTurns([]);
     setShowLabeledTranscript(false);
@@ -548,7 +550,11 @@ export default function App() {
         setIsProcessing(false);
         return;
       }
-      setGeneratedNote(gen.data.note);
+      const map = gen.data.notesByLanguage ?? {};
+      const primary = gen.data.primaryLanguage ?? 'en';
+      setNotesByLanguage(map);
+      setSelectedLanguage(primary);
+      setGeneratedNote(map[primary] ? { raw: map[primary] } : gen.data.note);
       setProcessingStep('');
       setIsProcessing(false);
       setActiveTab('note');
@@ -559,7 +565,7 @@ export default function App() {
     }
   }, []);
 
-  function handleSelectEncounter(encounter: Encounter) {
+  function applyEncounterToView(encounter: Encounter) {
     if (encounter.transcript) setTranscript(encounter.transcript);
     const map = encounter.notesByLanguage ?? {};
     const primary = map['en'] ? 'en' : Object.keys(map)[0] ?? 'en';
@@ -567,8 +573,21 @@ export default function App() {
     setSelectedLanguage(primary);
     if (map[primary]) setGeneratedNote({ raw: map[primary] });
     else if (encounter.generatedNote) setGeneratedNote(encounter.generatedNote);
+  }
+
+  function handleSelectEncounter(encounter: Encounter) {
+    // Show what the list already has immediately…
+    setTranscript(encounter.transcript ?? '');
+    setNotesByLanguage({});
+    setSelectedLanguage('en');
+    if (encounter.generatedNote) setGeneratedNote(encounter.generatedNote);
     setCurrentEncounterId(encounter.id);
     setActiveTab('note');
+    // …then fetch the full encounter to get the per-language note variants (the list
+    // endpoint omits them), so the language toggle appears for multilingual encounters.
+    void fetchEncounter(encounter.id).then((res) => {
+      if (res.success && res.data) applyEncounterToView(res.data);
+    });
   }
 
   // ─── Patient handlers ─────────────────────────────────────────────────────
