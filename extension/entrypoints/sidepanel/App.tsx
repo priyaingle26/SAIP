@@ -228,6 +228,9 @@ export default function App() {
     loadEncounters();
     // Ask the background worker for the current sync picture (offline backlog, etc.).
     chrome.runtime.sendMessage({ type: 'GET_SYNC_STATUS' }).catch(() => {});
+    // Restore in-progress recording state (panel may have been closed mid-recording);
+    // an abandoned recording is finalized by the worker instead.
+    chrome.runtime.sendMessage({ type: 'GET_RECORDING_STATE' }).catch(() => {});
     // Restore the previously selected patient (persisted across SW restarts)
     chrome.storage.local.get('saip_selected_patient_id').then(async (r) => {
       const pid = r['saip_selected_patient_id'] as string | null | undefined;
@@ -320,6 +323,14 @@ export default function App() {
         case 'STORAGE_WARNING': {
           const p = message.payload as { usageMB: number; quotaMB: number; ratio: number };
           setStorageWarning({ usageMB: p.usageMB, quotaMB: p.quotaMB });
+          break;
+        }
+
+        case 'RECORDING_STATE': {
+          // A live recording is still in progress (panel was reopened) → restore the
+          // recording UI so the user can Stop it. If not active, the worker finalizes it.
+          const p = message.payload as { active: boolean; sessionId?: string };
+          if (p.active) setIsRecording(true);
           break;
         }
 

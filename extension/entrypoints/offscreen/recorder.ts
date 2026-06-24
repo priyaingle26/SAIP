@@ -92,12 +92,11 @@ async function startRecording() {
         .catch(() => {});
       pendingPersists.push(persist);
 
-      // Periodically re-check storage pressure and refresh the session's activity
-      // timestamp, so a long but active recording is never seen as abandoned.
-      if (seq % QUOTA_CHECK_EVERY === 0) {
-        void maybeWarnStorage();
-        void touchSession(sid);
-      }
+      // Heartbeat on every chunk so the background can distinguish an actively-recording
+      // session (fresh updatedAt) from an abandoned one within a few seconds.
+      void touchSession(sid);
+      // Re-check storage pressure less frequently.
+      if (seq % QUOTA_CHECK_EVERY === 0) void maybeWarnStorage();
     };
 
     mediaRecorder.onstop = async () => {

@@ -69,6 +69,8 @@ export type MessageType =
   | 'SYNC_STATUS'
   | 'GET_SYNC_STATUS'
   | 'STORAGE_WARNING'
+  | 'GET_RECORDING_STATE'
+  | 'RECORDING_STATE'
   // Live streaming
   | 'STREAM_START'
   | 'STREAM_DELTA'

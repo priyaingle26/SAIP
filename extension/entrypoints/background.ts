@@ -14,9 +14,11 @@ import type { ExtensionMessage, Encounter, StreamFinalizedPayload } from '../lib
 
 const DRAIN_ALARM = 'saip-drain';
 // A `recording` session whose last chunk arrived this long ago was abandoned (browser
-// closed mid-capture). Keyed on IDLE time, not session age, so a long but still-active
-// recording — which keeps refreshing updatedAt — is never prematurely finalized.
-const STALE_RECORDING_IDLE_MS = 30 * 60 * 1000; // 30 min with no new chunk
+// closed mid-capture). The offscreen heartbeats updatedAt on every chunk (~3 s) while
+// actively recording, so any `recording` session not heartbeated within this window is no
+// longer being captured (panel/extension closed, SW evicted, crash) and is safe to finalize.
+// Keyed on IDLE time, not session age, so a long but still-active recording is never cut off.
+const RECORDING_ACTIVE_TIMEOUT_MS = 15 * 1000; // no heartbeat for 15 s ⇒ recording is dead
 
 // Push the current pending-upload picture to the sidepanel (best-effort; no-op if closed).
 function broadcastSyncStatus(summary: { pendingChunks: number; activeSessions: number }, syncing: boolean) {
@@ -95,6 +97,18 @@ export default defineBackground(() => {
     // A freshly opened sidepanel asks for the current state (no need to wait for the alarm).
     if (message?.type === 'GET_SYNC_STATUS') {
       void getSyncSummary().then((s) => broadcastSyncStatus(s, false));
+    }
+    // A reopened sidepanel asks whether a recording is in progress, so it can restore the
+    // Stop button (live capture) or let an abandoned recording finalize.
+    if (message?.type === 'GET_RECORDING_STATE') {
+      void (async () => {
+        await recoverStaleRecordingSessions(); // finalize any abandoned recording first
+        const active = await getActiveRecordingSession();
+        chrome.runtime
+          .sendMessage({ type: 'RECORDING_STATE', payload: { active: !!active, sessionId: active?.sessionId } })
+          .catch(() => {});
+        void drainAll();
+      })();
     }
   });
   // Recover any session stranded mid-recording by a crash, then resume the backlog.
@@ -325,18 +339,40 @@ async function processAudio(audioBase64: string, mimeType: string, encounterId?:
 // its chunks and IndexedDB entry forever. On startup, promote any such session that
 // is clearly abandoned to finalize via server re-transcription.
 
+function isRecordingActive(meta: SessionMeta): boolean {
+  return meta.status === 'recording'
+    && Date.now() - (meta.updatedAt ?? meta.createdAt) < RECORDING_ACTIVE_TIMEOUT_MS;
+}
+
+/** The session currently being captured (fresh heartbeat), if any. */
+async function getActiveRecordingSession(): Promise<SessionMeta | null> {
+  const sessions = await listActiveSessions();
+  return sessions.find(isRecordingActive) ?? null;
+}
+
 async function recoverStaleRecordingSessions() {
-  const now = Date.now();
+  let promoted = false;
   const sessions = await listActiveSessions();
   for (const meta of sessions) {
-    if (meta.status !== 'recording') continue;
-    const lastActivity = meta.updatedAt ?? meta.createdAt;
-    if (now - lastActivity < STALE_RECORDING_IDLE_MS) continue; // still active — leave it
+    if (meta.status !== 'recording' || isRecordingActive(meta)) continue; // still capturing — leave it
     await setSessionMeta({
       ...meta,
       retranscribe: true, // no streamed transcript survived — re-transcribe the audio
       status: 'pending-finalize',
     });
+    promoted = true;
+  }
+  // No live capture in progress → make sure no offscreen mic is left running.
+  if (!(await getActiveRecordingSession())) void closeOffscreenIfIdle();
+  return promoted;
+}
+
+/** Close the offscreen document (releases the mic) when nothing is actively recording. */
+async function closeOffscreenIfIdle() {
+  try {
+    if (await chrome.offscreen.hasDocument()) await chrome.offscreen.closeDocument();
+  } catch {
+    /* no document or already closing — ignore */
   }
 }
 
