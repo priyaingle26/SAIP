@@ -116,6 +116,29 @@ const PersonIcon = ({ size = 20 }: { size?: number }) => (
   </svg>
 );
 
+const PauseIcon = ({ size = 16 }: { size?: number }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" style={{ flexShrink: 0 }}>
+    <rect x="6" y="5" width="4" height="14" rx="1" />
+    <rect x="14" y="5" width="4" height="14" rx="1" />
+  </svg>
+);
+const PlayIcon = ({ size = 16 }: { size?: number }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" style={{ flexShrink: 0 }}>
+    <path d="M8 5v14l11-7z" />
+  </svg>
+);
+const TrashIcon = ({ size = 16 }: { size?: number }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
+    stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+    aria-hidden="true" style={{ flexShrink: 0 }}>
+    <path d="M3 6h18" />
+    <path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" />
+    <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+    <line x1="10" x2="10" y1="11" y2="17" />
+    <line x1="14" x2="14" y1="11" y2="17" />
+  </svg>
+);
+
 // ─── Logo mark ────────────────────────────────────────────────────────────────
 const LogoMark = ({ size = 26 }: { size?: number }) => (
   <div aria-hidden="true" style={{
@@ -804,11 +827,11 @@ export default function MobileApp() {
                     <div style={{ display: "flex", gap: 10 }}>
                       {isPaused ? (
                         <button onClick={handleResume} style={{ flex: 1, padding: "13px 16px", fontSize: 15, fontWeight: 600, fontFamily: T.fontBody, borderRadius: 10, border: "none", background: T.primary, color: T.primaryFg, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
-                          ▶ Resume
+                          <PlayIcon size={15} /> Resume
                         </button>
                       ) : (
                         <button onClick={handlePause} style={{ flex: 1, padding: "13px 16px", fontSize: 15, fontWeight: 600, fontFamily: T.fontBody, borderRadius: 10, border: `1px solid ${T.primarySubtleBorder}`, background: T.primarySubtle, color: T.primary, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
-                          ⏸ Pause
+                          <PauseIcon size={15} /> Pause
                         </button>
                       )}
                       <button onClick={stopRecording} style={{ flex: 1, padding: "13px 16px", fontSize: 15, fontWeight: 600, fontFamily: T.fontBody, borderRadius: 10, border: "none", background: T.destructive, color: T.destructiveFg, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
@@ -968,9 +991,9 @@ export default function MobileApp() {
                         aria-label="Delete encounter"
                         title="Delete encounter"
                         onClick={(e) => void handleDeleteEncounter(enc.id, e)}
-                        style={{ width: 28, height: 28, display: "inline-flex", alignItems: "center", justifyContent: "center", border: "none", background: "transparent", color: T.muted2, cursor: "pointer", borderRadius: 6, fontSize: 14, lineHeight: 1 }}
+                        style={{ width: 28, height: 28, display: "inline-flex", alignItems: "center", justifyContent: "center", border: "none", background: "transparent", color: T.muted2, cursor: "pointer", borderRadius: 6 }}
                       >
-                        🗑
+                        <TrashIcon size={15} />
                       </button>
                     </div>
                   </div>
