@@ -216,6 +216,9 @@ export default function MobileApp() {
   const [syncStatus, setSyncStatus] = useState<{ pendingChunks: number; syncing: boolean } | null>(null);
   const [storageWarning, setStorageWarning] = useState<{ usageMB: number; quotaMB: number } | null>(null);
   const [isOnline, setIsOnline] = useState(true);
+  const [offlineSaved, setOfflineSaved] = useState(false);
+  const offlineSavedRef = useRef(false);
+  const markOfflineSaved = useCallback((v: boolean) => { offlineSavedRef.current = v; setOfflineSaved(v); }, []);
   const recorderRef = useRef<MobileRecorder | null>(null);
 
   // ── Patient state ───────────────────────────────────────────────────────────
@@ -281,6 +284,7 @@ export default function MobileApp() {
       }
       setIsProcessing(false);
       setProcessingStep("");
+      markOfflineSaved(false);
       void fetchEncounters(localStorage.getItem("saip_ext_token") ?? "");
       return true;
     });
@@ -290,12 +294,20 @@ export default function MobileApp() {
       setSyncStatus({ pendingChunks: summary.pendingChunks, syncing });
     });
 
-    // Online/offline → banner + drain on reconnect.
-    const setOnline = () => setIsOnline(true);
-    const setOffline = () => setIsOnline(false);
+    // Online/offline → banner + drain on reconnect; flip "saved offline" → "transcribing".
+    const handleOnline = () => {
+      setIsOnline(true);
+      if (offlineSavedRef.current) {
+        markOfflineSaved(false);
+        setIsProcessing(true);
+        setProcessingStep("Uploading & transcribing…");
+      }
+      void drainAll();
+    };
+    const handleOffline = () => setIsOnline(false);
     setIsOnline(typeof navigator !== "undefined" ? navigator.onLine : true);
-    window.addEventListener("online", () => { setOnline(); void drainAll(); });
-    window.addEventListener("offline", setOffline);
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
 
     void registerServiceWorker();
 
@@ -312,11 +324,11 @@ export default function MobileApp() {
     })();
 
     return () => {
-      window.removeEventListener("online", setOnline);
-      window.removeEventListener("offline", setOffline);
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
       recorderRef.current?.destroy();
     };
-  }, []);
+  }, [markOfflineSaved]);
 
   // Mirror auth token + backend URL into IndexedDB so the service worker can drain after close.
   useEffect(() => {
@@ -379,10 +391,13 @@ export default function MobileApp() {
         onResumed: (t) => { setIsPaused(false); setTiming({ recordedMs: t.recordedMs, lastResumedAt: t.lastResumedAt }); },
         onStopped: (discarded: boolean) => {
           setIsRecording(false); setIsPaused(false);
-          if (discarded) { setIsProcessing(false); setProcessingStep(""); return; }
+          if (discarded) { setIsProcessing(false); setProcessingStep(""); markOfflineSaved(false); return; }
           // The sync queue uploads remaining chunks then the finalize handler updates the UI.
           if (typeof navigator !== "undefined" && navigator.onLine) {
             setIsProcessing(true); setProcessingStep("Uploading & transcribing…");
+          } else {
+            // Stopped offline: capture is durably saved; finalize is parked until reconnect.
+            markOfflineSaved(true);
           }
         },
         onStorageWarning: (w) => setStorageWarning(w),
@@ -394,6 +409,7 @@ export default function MobileApp() {
 
   async function startRecording() {
     setTranscript(""); setGeneratedNote(null); setEditedNoteContent(""); setIsEditingNote(false); setProcessingError("");
+    markOfflineSaved(false);
     await ensureRecorder().start(selectedPatient?.id);
   }
 
@@ -766,6 +782,12 @@ export default function MobileApp() {
               </div>
 
               <div style={{ display: "flex", flexDirection: "column", gap: 10, width: "100%", maxWidth: 280 }}>
+                {!isRecording && !isProcessing && offlineSaved && (
+                  <div style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "10px 14px", borderRadius: 10, background: T.warningBg, border: `1px solid ${T.warningBorder}`, color: T.warning, fontSize: 13, lineHeight: 1.4 }}>
+                    <span style={{ width: 8, height: 8, borderRadius: "50%", background: "currentColor", flexShrink: 0, marginTop: 5 }} />
+                    <span>Saved offline — this recording will transcribe &amp; generate its note automatically when you reconnect.</span>
+                  </div>
+                )}
                 {!isRecording && !isProcessing && (
                   <>
                     <button onClick={startRecording} style={{ width: "100%", padding: "13px 20px", fontSize: 15, fontWeight: 600, fontFamily: T.fontBody, borderRadius: 10, border: "none", background: T.primary, color: T.primaryFg, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, boxShadow: "0 2px 8px rgba(59,39,106,0.28)" }}>
