@@ -29,7 +29,8 @@ export interface RecorderCallbacks {
   onStarted?: (sessionId: string) => void;
   onPaused?: (timing: TimerState, auto: boolean) => void;
   onResumed?: (timing: TimerState) => void;
-  onStopped?: () => void;
+  /** `discarded` is true when the stop came from discard() — no finalize will follow. */
+  onStopped?: (discarded: boolean) => void;
   onStorageWarning?: (info: { usageMB: number; quotaMB: number }) => void;
   onError?: (message: string) => void;
 }
@@ -49,6 +50,7 @@ export class MobileRecorder {
   private heartbeat: ReturnType<typeof setInterval> | null = null;
   private wakeLock: WakeLockSentinelLike = null;
   private cb: RecorderCallbacks;
+  private stopResolve: (() => void) | null = null;
 
   constructor(cb: RecorderCallbacks = {}) {
     this.cb = cb;
@@ -128,7 +130,8 @@ export class MobileRecorder {
     await this.releaseWakeLock();
     await Promise.allSettled(this.pendingPersists);
 
-    if (!this.discarding && this.sessionId) {
+    const wasDiscard = this.discarding;
+    if (!wasDiscard && this.sessionId) {
       const meta = await getSessionMeta(this.sessionId);
       if (meta) {
         await setSessionMeta({ ...meta, status: 'pending-finalize', retranscribe: true, paused: false });
@@ -139,7 +142,11 @@ export class MobileRecorder {
     this.stream?.getTracks().forEach((t) => t.stop());
     this.stream = null;
     this.discarding = false;
-    this.cb.onStopped?.();
+    // Only the discard path resolves a waiter; the caller then purges local + server data
+    // AFTER all chunk writes have settled (no orphan-chunk race).
+    this.stopResolve?.();
+    this.stopResolve = null;
+    this.cb.onStopped?.(wasDiscard);
   }
 
   async pause(auto = false): Promise<void> {
@@ -171,16 +178,24 @@ export class MobileRecorder {
     if (this.mediaRecorder.state === 'recording') this.mediaRecorder.stop();
   }
 
-  /** Discard: stop + release mic WITHOUT handing off to finalize. Caller writes the tombstone first. */
-  async discard(): Promise<void> {
-    if (!this.mediaRecorder) return;
+  /** Discard: stop + release mic WITHOUT handing off to finalize. Caller writes the tombstone first.
+   *  Resolves only AFTER the recorder has fully stopped and all chunk writes settled, so the
+   *  caller can purge local + server data without racing a final pending chunk. */
+  discard(): Promise<void> {
+    if (!this.mediaRecorder) return Promise.resolve();
     this.discarding = true;
-    if (this.mediaRecorder.state === 'paused') this.mediaRecorder.resume();
-    if (this.mediaRecorder.state === 'recording' || this.mediaRecorder.state === 'paused') {
-      this.mediaRecorder.stop();
-    } else {
-      this.discarding = false;
-    }
+    return new Promise<void>((resolve) => {
+      this.stopResolve = resolve;
+      const mr = this.mediaRecorder!;
+      if (mr.state === 'paused') mr.resume();
+      if (mr.state === 'recording' || mr.state === 'paused') {
+        mr.stop();
+      } else {
+        this.discarding = false;
+        this.stopResolve = null;
+        resolve();
+      }
+    });
   }
 
   destroy() {

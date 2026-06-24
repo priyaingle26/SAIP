@@ -377,8 +377,9 @@ export default function MobileApp() {
         onStarted: () => { setIsRecording(true); setIsPaused(false); setTiming({ recordedMs: 0, lastResumedAt: Date.now() }); },
         onPaused: (t) => { setIsPaused(true); setTiming({ recordedMs: t.recordedMs, lastResumedAt: undefined }); },
         onResumed: (t) => { setIsPaused(false); setTiming({ recordedMs: t.recordedMs, lastResumedAt: t.lastResumedAt }); },
-        onStopped: () => {
+        onStopped: (discarded: boolean) => {
           setIsRecording(false); setIsPaused(false);
+          if (discarded) { setIsProcessing(false); setProcessingStep(""); return; }
           // The sync queue uploads remaining chunks then the finalize handler updates the UI.
           if (typeof navigator !== "undefined" && navigator.onLine) {
             setIsProcessing(true); setProcessingStep("Uploading & transcribing…");
