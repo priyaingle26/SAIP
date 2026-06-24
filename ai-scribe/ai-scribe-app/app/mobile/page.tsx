@@ -248,6 +248,9 @@ export default function MobileApp() {
   const [isPaused, setIsPaused] = useState(false);
   const [timing, setTiming] = useState<TimerState>({ recordedMs: 0 });
   const [syncStatus, setSyncStatus] = useState<{ pendingChunks: number; syncing: boolean } | null>(null);
+  // Debounced visibility for the online "Syncing…" banner — avoids it flashing in/out (and
+  // shifting the layout) for the normal per-chunk drain during recording.
+  const [showSyncing, setShowSyncing] = useState(false);
   const [storageWarning, setStorageWarning] = useState<{ usageMB: number; quotaMB: number } | null>(null);
   const [isOnline, setIsOnline] = useState(true);
   const [offlineSaved, setOfflineSaved] = useState(false);
@@ -579,6 +582,18 @@ export default function MobileApp() {
     if (activeTab === "patient" && selectedPatient) void loadPatientProfile(selectedPatient.id);
   }, [activeTab, selectedPatient, loadPatientProfile]);
 
+  // Show the online "Syncing…" banner only for a genuinely stuck backlog (>1.2s) and never
+  // while recording — so the normal per-chunk drain doesn't flicker the banner / shift content.
+  useEffect(() => {
+    const pending = syncStatus?.pendingChunks ?? 0;
+    if (isOnline && pending > 0 && !isRecording) {
+      const id = setTimeout(() => setShowSyncing(true), 1200);
+      return () => clearTimeout(id);
+    }
+    setShowSyncing(false);
+    return undefined;
+  }, [syncStatus, isOnline, isRecording]);
+
   const handleConfirmField = useCallback(async (fieldKey: string) => {
     if (!selectedPatient) return;
     setConfirmingField(fieldKey);
@@ -717,14 +732,17 @@ export default function MobileApp() {
           Low device storage ({storageWarning.usageMB} MB used) — finish &amp; sync this session soon.
         </div>
       )}
-      {syncStatus && syncStatus.pendingChunks > 0 && (
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "6px 14px", background: isOnline ? T.primarySubtle : T.warningBg, borderBottom: `1px solid ${isOnline ? T.primarySubtleBorder : T.warningBorder}`, color: isOnline ? T.primary : T.warning, fontSize: 12, fontWeight: 600 }}>
-          <span>
-            {isOnline
-              ? `Syncing ${syncStatus.pendingChunks} chunk${syncStatus.pendingChunks === 1 ? "" : "s"}…`
-              : `Offline — ${syncStatus.pendingChunks} chunk${syncStatus.pendingChunks === 1 ? "" : "s"} saved, will sync when reconnected`}
-          </span>
-          {isOnline && !syncStatus.syncing && (
+      {/* Offline backlog — persistent (no flicker). */}
+      {!isOnline && (syncStatus?.pendingChunks ?? 0) > 0 && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 14px", background: T.warningBg, borderBottom: `1px solid ${T.warningBorder}`, color: T.warning, fontSize: 12, fontWeight: 600 }}>
+          Offline — {syncStatus!.pendingChunks} chunk{syncStatus!.pendingChunks === 1 ? "" : "s"} saved, will sync when reconnected
+        </div>
+      )}
+      {/* Online sync — only when a real backlog persists (debounced), never mid-recording. */}
+      {showSyncing && (syncStatus?.pendingChunks ?? 0) > 0 && (
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "6px 14px", background: T.primarySubtle, borderBottom: `1px solid ${T.primarySubtleBorder}`, color: T.primary, fontSize: 12, fontWeight: 600 }}>
+          <span>Syncing {syncStatus!.pendingChunks} chunk{syncStatus!.pendingChunks === 1 ? "" : "s"}…</span>
+          {!syncStatus!.syncing && (
             <button onClick={handleSyncNow} style={{ border: "none", background: "transparent", color: T.primary, fontWeight: 700, fontSize: 12, cursor: "pointer", textDecoration: "underline" }}>Sync now</button>
           )}
         </div>

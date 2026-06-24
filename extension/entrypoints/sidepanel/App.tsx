@@ -73,12 +73,27 @@ function LogoMark({ size = 26 }: { size?: number }) {
 function SyncBanner({
   status,
   storageWarning,
+  isRecording,
 }: {
   status: { pendingChunks: number; activeSessions: number; syncing: boolean; online: boolean } | null;
   storageWarning: { usageMB: number; quotaMB: number } | null;
+  isRecording: boolean;
 }) {
   const pending = status?.pendingChunks ?? 0;
+  const online = status?.online ?? true;
   const n = (c: number) => `${c} chunk${c === 1 ? '' : 's'}`;
+
+  // Debounce the online "Syncing…" banner: only show it for a genuinely stuck backlog (>1.2s)
+  // and never while recording — otherwise the normal per-chunk drain flickers it in/out and
+  // shifts the page content.
+  const [showSyncing, setShowSyncing] = useState(false);
+  useEffect(() => {
+    if (online && pending > 0 && !isRecording) {
+      const id = setTimeout(() => setShowSyncing(true), 1200);
+      return () => clearTimeout(id);
+    }
+    setShowSyncing(false);
+  }, [online, pending, isRecording]);
 
   let sync: { text: string; bg: string; border: string; fg: string; dot: boolean } | null = null;
   if (status && !status.online && pending > 0) {
@@ -87,7 +102,7 @@ function SyncBanner({
       bg: 'var(--color-warning-bg, #fef3c7)', border: 'var(--color-warning-border, #fcd34d)',
       fg: 'var(--color-warning, #b45309)', dot: true,
     };
-  } else if (status && pending > 0) {
+  } else if (status && pending > 0 && showSyncing) {
     sync = {
       text: `Syncing ${n(pending)}…`,
       bg: 'var(--color-primary-subtle)', border: 'var(--color-primary-subtle-border)',
@@ -716,7 +731,7 @@ export default function App() {
       />
 
       {/* ── Durable-capture sync / storage banners (visible on every tab) ── */}
-      <SyncBanner status={syncStatus} storageWarning={storageWarning} />
+      <SyncBanner status={syncStatus} storageWarning={storageWarning} isRecording={isRecording} />
 
       {/* ── Content ── */}
       <main
