@@ -86,8 +86,10 @@ export default defineBackground(() => {
   });
   // Drain immediately when connectivity returns or a new chunk is persisted.
   self.addEventListener('online', () => void drainAll());
-  // Flip the banner to "offline" the moment connectivity drops.
+  // Flip the banner to "offline" the moment connectivity drops. If this happens while
+  // streaming, the live transcript will have a gap → force a full re-transcription later.
   self.addEventListener('offline', () => {
+    if (streamingTranscript !== null) streamInterrupted = true;
     void getSyncSummary().then((s) => broadcastSyncStatus(s, false));
   });
   chrome.runtime.onMessage.addListener((message: { type?: string }) => {
@@ -154,6 +156,10 @@ async function reinjectContentScripts() {
 let realtimeWs: WebSocket | null = null;
 let streamingTranscript: string | null = null; // null = not in streaming mode
 let streamingDeltaBuffer = '';                 // accumulates current partial utterance
+// True if connectivity dropped or the realtime WS errored at any point during this
+// recording. A partial streamed transcript then has a gap (the offline audio was never
+// streamed), so we must re-transcribe the complete durable audio at finalize.
+let streamInterrupted = false;
 let sessionPatientId: string | null = null;    // patient linked to the current recording session
 
 // Read the selected patient, preferring storage (survives SW restarts) over the
@@ -205,6 +211,7 @@ function handleStreamPort(port: chrome.runtime.Port) {
 async function openRealtimeWs() {
   streamingTranscript = '';
   streamingDeltaBuffer = '';
+  streamInterrupted = false; // fresh recording: assume the stream is healthy until proven otherwise
 
   const token = await getAuthToken();
   if (!token) {
@@ -263,7 +270,9 @@ async function openRealtimeWs() {
     };
 
     realtimeWs.onerror = () => {
-      // WS error — fall back to batch (streamingTranscript stays set; finalizeStreamingSession handles null check)
+      // WS error — the stream is no longer trustworthy; force re-transcription of the
+      // durable audio at finalize so nothing spoken during the drop is lost.
+      streamInterrupted = true;
       streamingTranscript = null;
       realtimeWs = null;
     };
@@ -342,8 +351,13 @@ async function recoverStaleRecordingSessions() {
 async function markSessionPendingFinalize(sessionId: string, mimeType: string) {
   const transcript = streamingTranscript ?? '';
   const patientId = await getSelectedPatientId();
+  // Re-transcribe the complete durable audio when there is no streamed transcript at all
+  // (fully offline) OR the stream was interrupted mid-recording (partial online→offline→
+  // online gap) — otherwise the offline-spoken portion would be missing from the note.
+  const needsRetranscribe = !transcript || streamInterrupted;
   streamingTranscript = null;
   streamingDeltaBuffer = '';
+  streamInterrupted = false;
 
   const existing = await getSessionMeta(sessionId);
   await setSessionMeta({
@@ -351,8 +365,7 @@ async function markSessionPendingFinalize(sessionId: string, mimeType: string) {
     mimeType,
     patientId: patientId ?? undefined,
     transcript,
-    // No streamed transcript (offline or streaming unavailable) → re-transcribe audio.
-    retranscribe: !transcript,
+    retranscribe: needsRetranscribe,
     status: 'pending-finalize',
     createdAt: existing?.createdAt ?? Date.now(),
   });
