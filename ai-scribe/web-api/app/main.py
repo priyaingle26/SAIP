@@ -79,6 +79,9 @@ async def lifespan(_: FastAPI):
     if not settings.USE_AURORA:
         db.Base.metadata.create_all(db.engine)
 
+    # Apply idempotent additive column migrations for existing DBs (create_all won't ALTER).
+    db.ensure_schema_migrations()
+
     if settings.ENVIRONMENT == "development" and not db.is_datafolder_initialized():
         db.initialize_dev_datafolder()
         db.update_builtin_notetypes()

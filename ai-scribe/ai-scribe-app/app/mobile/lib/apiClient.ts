@@ -87,7 +87,7 @@ export async function generateNote(
   encounterId: string,
   transcript: string,
   patientId?: string,
-): Promise<{ ok: boolean; data?: { note: { raw: string }; encounterId: string } }> {
+): Promise<{ ok: boolean; data?: { note: { raw: string }; encounterId: string; notesByLanguage?: Record<string, string>; primaryLanguage?: string } }> {
   try {
     const res = await fetch(getApiUrl('/generate'), {
       method: 'POST',

@@ -18,6 +18,14 @@ import {
 
 type Tab = 'record' | 'note' | 'history' | 'patient';
 
+// Display names for the language toggle (ISO-639-1 → English name). Falls back to the code.
+const LANG_NAMES: Record<string, string> = {
+  en: 'English', hi: 'Hindi', es: 'Spanish', fr: 'French', de: 'German', pt: 'Portuguese',
+  zh: 'Chinese', ar: 'Arabic', ru: 'Russian', ja: 'Japanese', ko: 'Korean', bn: 'Bengali',
+  pa: 'Punjabi', ta: 'Tamil', te: 'Telugu', mr: 'Marathi', gu: 'Gujarati', ur: 'Urdu',
+  it: 'Italian', vi: 'Vietnamese', tl: 'Tagalog', fa: 'Persian', pl: 'Polish',
+};
+
 function PersonIcon({ size = 16 }: { size?: number }) {
   return (
     <svg aria-hidden="true" width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
@@ -187,12 +195,17 @@ export default function App() {
   const [isRecording, setIsRecording] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  // Stopwatch state: elapsed = recordedMs + (now - lastResumedAt) while running.
+  const [timing, setTiming] = useState<{ recordedMs: number; lastResumedAt?: number }>({ recordedMs: 0 });
   const [isProcessing, setIsProcessing] = useState(false);
   const [processingStep, setProcessingStep] = useState('');
   const [processingError, setProcessingError] = useState('');
 
   const [transcript, setTranscript] = useState('');
   const [generatedNote, setGeneratedNote] = useState<ClinicalNote | null>(null);
+  // Multilingual notes: per-language markdown variants + the currently viewed language.
+  const [notesByLanguage, setNotesByLanguage] = useState<Record<string, string>>({});
+  const [selectedLanguage, setSelectedLanguage] = useState<string>('en');
   const [currentEncounterId, setCurrentEncounterId] = useState<string | null>(null);
   const [encounters, setEncounters] = useState<Encounter[]>([]);
   const [activeTab, setActiveTab] = useState<Tab>('record');
@@ -305,8 +318,16 @@ export default function App() {
         }
 
         case 'GENERATE_COMPLETE': {
-          const p = message.payload as { note: ClinicalNote; encounterId: string };
-          setGeneratedNote(p.note);
+          const p = message.payload as {
+            note: ClinicalNote; encounterId: string;
+            notesByLanguage?: Record<string, string>; primaryLanguage?: string;
+          };
+          const map = p.notesByLanguage ?? {};
+          const primary = p.primaryLanguage ?? 'en';
+          setNotesByLanguage(map);
+          setSelectedLanguage(primary);
+          // Show the primary-language note (falls back to whatever the payload's note is).
+          setGeneratedNote(map[primary] ? { raw: map[primary] } : p.note);
           setIsProcessing(false);
           setProcessingStep('');
           setActiveTab('note');
@@ -329,22 +350,29 @@ export default function App() {
         }
 
         case 'RECORDING_STATE': {
-          const p = message.payload as { active: boolean; sessionId?: string; paused?: boolean };
+          const p = message.payload as { active: boolean; sessionId?: string; paused?: boolean; recordedMs?: number; lastResumedAt?: number };
           if (p.active) {
             setIsRecording(true);
             setIsPaused(p.paused ?? false);
             if (p.sessionId) setActiveSessionId(p.sessionId);
+            setTiming({ recordedMs: p.recordedMs ?? 0, lastResumedAt: p.lastResumedAt });
           }
           break;
         }
 
-        case 'RECORDING_PAUSED':
+        case 'RECORDING_PAUSED': {
+          const p = message.payload as { recordedMs?: number };
           setIsPaused(true);
+          setTiming((t) => ({ recordedMs: p?.recordedMs ?? t.recordedMs, lastResumedAt: undefined }));
           break;
+        }
 
-        case 'RECORDING_RESUMED':
+        case 'RECORDING_RESUMED': {
+          const p = message.payload as { recordedMs?: number; lastResumedAt?: number };
           setIsPaused(false);
+          setTiming({ recordedMs: p?.recordedMs ?? 0, lastResumedAt: p?.lastResumedAt ?? Date.now() });
           break;
+        }
 
         case 'ERROR':
           setIsProcessing(false);
@@ -408,6 +436,8 @@ export default function App() {
       stream.getTracks().forEach(t => t.stop());
 
       setIsRecording(true);
+      setIsPaused(false);
+      setTiming({ recordedMs: 0, lastResumedAt: Date.now() });
       setTranscript('');
       setGeneratedNote(null);
       setProcessingError('');
@@ -516,7 +546,12 @@ export default function App() {
 
   function handleSelectEncounter(encounter: Encounter) {
     if (encounter.transcript) setTranscript(encounter.transcript);
-    if (encounter.generatedNote) setGeneratedNote(encounter.generatedNote);
+    const map = encounter.notesByLanguage ?? {};
+    const primary = map['en'] ? 'en' : Object.keys(map)[0] ?? 'en';
+    setNotesByLanguage(map);
+    setSelectedLanguage(primary);
+    if (map[primary]) setGeneratedNote({ raw: map[primary] });
+    else if (encounter.generatedNote) setGeneratedNote(encounter.generatedNote);
     setCurrentEncounterId(encounter.id);
     setActiveTab('note');
   }
@@ -799,7 +834,7 @@ export default function App() {
                     ? (isPaused ? 'var(--color-warning, #b45309)' : 'var(--color-destructive)')
                     : 'var(--color-primary)',
                 }}>
-                  {isRecording ? <RecordingTimer paused={isPaused} /> : <MicIcon size={32} />}
+                  {isRecording ? <RecordingTimer paused={isPaused} recordedMs={timing.recordedMs} lastResumedAt={timing.lastResumedAt} /> : <MicIcon size={32} />}
                 </div>
               </div>
 
@@ -972,12 +1007,35 @@ export default function App() {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
             {generatedNote ? (
               <>
+                {/* Language toggle — shown only when the note exists in more than one language. */}
+                {Object.keys(notesByLanguage).length > 1 && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+                    <span style={{ fontSize: 'var(--text-xs)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--color-muted)' }}>
+                      Language
+                    </span>
+                    <select
+                      aria-label="Note language"
+                      value={selectedLanguage}
+                      onChange={(e) => {
+                        const code = e.target.value;
+                        setSelectedLanguage(code);
+                        if (notesByLanguage[code]) setGeneratedNote({ raw: notesByLanguage[code] });
+                      }}
+                      style={{ ...INPUT_STYLE, width: 'auto', padding: '6px 10px', fontSize: 'var(--text-sm)' }}
+                    >
+                      {Object.keys(notesByLanguage).map((code) => (
+                        <option key={code} value={code}>{LANG_NAMES[code] ?? code.toUpperCase()}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
                 <GeneratedNoteView note={generatedNote} onNoteChange={setGeneratedNote} />
                 <Divider />
                 <FormAssistant
                   transcript={transcript}
                   clinicalNote={generatedNote.raw ?? ''}
                   patientId={selectedPatient?.id}
+                  language={selectedLanguage !== 'en' ? { code: selectedLanguage, name: LANG_NAMES[selectedLanguage] ?? selectedLanguage } : undefined}
                 />
               </>
             ) : (

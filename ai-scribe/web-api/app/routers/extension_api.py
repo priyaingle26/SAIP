@@ -138,8 +138,17 @@ class TranscribeResponse(BaseModel):
 class ClinicalNoteOutput(BaseModel):
     raw: str
 
+class DetectedLanguage(BaseModel):
+    name: str
+    code: str
+
 class GenerateResponse(BaseModel):
     note: ClinicalNoteOutput
+    # Multilingual: the note rendered in each detected language (code -> markdown text),
+    # the languages detected, and which one `note.raw` holds (the primary/English).
+    languages: list[DetectedLanguage] = []
+    primaryLanguage: str = "en"
+    notesByLanguage: dict[str, str] = {}
 
 # --- Auth Endpoints ---
 
@@ -197,6 +206,23 @@ class ExtEncounter(BaseModel):
     status: str
     transcript: str | None = None
     generatedNote: ExtEncounterNote | None = None
+    # Multilingual: per-language note variants (ISO code -> markdown) + the codes present.
+    notesByLanguage: dict[str, str] = {}
+    languageCodes: list[str] = []
+
+
+def _build_notes_by_language(active_notes: list) -> tuple[dict[str, str], "ExtEncounterNote | None"]:
+    """From active draft notes, build {lang_code: content} and pick the primary (English) note."""
+    notes_by_lang: dict[str, str] = {}
+    for n in active_notes:
+        if not n.content:
+            continue
+        code = (getattr(n, "language", None) or "en")
+        notes_by_lang[code] = n.content
+    if not notes_by_lang:
+        return {}, None
+    primary = notes_by_lang.get("en") or next(iter(notes_by_lang.values()))
+    return notes_by_lang, ExtEncounterNote(raw=primary)
 
 @router.get("/ext-encounters")
 async def ext_list_encounters(
@@ -223,7 +249,7 @@ async def ext_list_encounters(
     for enc in rows:
         transcript = enc.recording.transcript if enc.recording else None
         active_notes = [n for n in enc.draft_notes if not n.inactivated]
-        note = ExtEncounterNote(raw=active_notes[-1].content) if active_notes else None
+        _, note = _build_notes_by_language(active_notes)
         status = "autofilled" if enc.context and "autofilled" in enc.context else (
             "generated" if note else ("transcribed" if transcript else "pending")
         )
@@ -263,7 +289,7 @@ async def ext_get_encounter(
 
     transcript = enc.recording.transcript if enc.recording else None
     active_notes = [n for n in enc.draft_notes if not n.inactivated]
-    note = ExtEncounterNote(raw=active_notes[-1].content) if active_notes else None
+    notes_by_lang, note = _build_notes_by_language(active_notes)
     status = "generated" if note else ("transcribed" if transcript else "pending")
     return ExtEncounter(
         id=enc.id,
@@ -272,6 +298,8 @@ async def ext_get_encounter(
         status=status,
         transcript=transcript,
         generatedNote=note,
+        notesByLanguage=notes_by_lang,
+        languageCodes=list(notes_by_lang.keys()),
     )
 
 
@@ -751,6 +779,10 @@ def _label_transcript(raw_transcript: str, clinician_name: str) -> list[dict]:
         "For example, if someone says 'your wife' or calls the patient 'hon', that is a family member. Label them descriptively (e.g., 'Husband', 'Mother'). "
         "Do not use 'Unidentified Speaker' unless you have absolutely no context clues. "
         "Split the transcript into turns ONLY when the speaker actually changes. "
+        "CRITICAL — LANGUAGE FIDELITY: Output each turn's `text` EXACTLY as it was spoken, in its "
+        "ORIGINAL language and script (e.g. keep Hindi in Devanagari, Spanish in Spanish). NEVER "
+        "translate, transliterate, romanize, or normalize the text to English. Your ONLY job is to fix "
+        "speaker labels and split turns — never alter, rephrase, or convert the words themselves. "
         "Return ONLY a JSON array: [{\"speaker\": \"...\", \"text\": \"...\"}]"
     )
 
@@ -760,8 +792,8 @@ def _label_transcript(raw_transcript: str, clinician_name: str) -> list[dict]:
     ]
 
     try:
-        # Match the configured service's model (SPEAKER_LABELING_MODEL is an
-        # OpenAI name that 404s on Gemini, silently degrading diarization).
+        # Keep using the configured note model: SPEAKER_LABELING_MODEL is an OpenAI name that
+        # 404s on Gemini, silently degrading diarization.
         output = service.complete(settings.DEFAULT_NOTE_GENERATION_MODEL, messages)
         raw = output.text.strip()
         if raw.startswith("```"):
@@ -781,6 +813,59 @@ def _label_transcript(raw_transcript: str, clinician_name: str) -> list[dict]:
 
 def _turns_to_plaintext(turns: list[dict]) -> str:
     return "\n".join(f"{t['speaker']}: {t['text']}" for t in turns)
+
+
+def _detect_languages(transcript: str) -> list[dict]:
+    """Detect the languages actually spoken in a transcript.
+
+    Returns a list of {"name": str, "code": str} (ISO-639-1), e.g.
+    [{"name": "English", "code": "en"}, {"name": "Hindi", "code": "hi"}].
+    English is always guaranteed present in the returned set (clinical notes default to
+    English for EHR consistency). Falls back to English-only on any failure.
+    """
+    en = {"name": "English", "code": "en"}
+    if not transcript.strip():
+        return [en]
+
+    from app.config.ai import generative_ai_services  # noqa: PLC0415
+    service = generative_ai_services[0]
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You identify the natural languages present in a conversation transcript. "
+                "Return ONLY a JSON array of objects with 'name' (English name of the language) "
+                "and 'code' (ISO-639-1 two-letter code), one per DISTINCT language actually spoken. "
+                "Ignore stray foreign words; only list a language if a meaningful portion is in it. "
+                'Example: [{"name":"English","code":"en"},{"name":"Hindi","code":"hi"}]'
+            ),
+        },
+        {"role": "user", "content": f"TRANSCRIPT:\n{transcript[:6000]}"},
+    ]
+    try:
+        out = service.complete(settings.DEFAULT_NOTE_GENERATION_MODEL, messages)
+        raw = out.text.strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+            raw = raw.strip()
+        detected = json.loads(raw)
+        langs: list[dict] = []
+        seen: set[str] = set()
+        for d in detected if isinstance(detected, list) else []:
+            code = str(d.get("code", "")).strip().lower()[:10]
+            name = str(d.get("name", "")).strip()
+            if code and name and code not in seen:
+                seen.add(code)
+                langs.append({"name": name, "code": code})
+        # Always include English in the target set.
+        if "en" not in seen:
+            langs.insert(0, en)
+        return langs or [en]
+    except Exception as e:
+        logger.warning(f"Language detection failed, defaulting to English: {e}")
+        return [en]
 
 
 class FinalizeResponse(BaseModel):
@@ -1009,16 +1094,34 @@ async def extension_generate(
     except Exception as e:
         logger.warning(f"Failed to fetch NoteDefinition: {e}")
 
-    output = generate_note(
-        model=settings.DEFAULT_NOTE_GENERATION_MODEL,
-        instructions=instructions,
-        context=None,
-        transcript=request.transcript,
-        output_type="Markdown"
-    )
+    # Detect the languages spoken; generate the note in English + each detected language.
+    languages = _detect_languages(request.transcript)
+    # English is the primary variant (note.raw); ensure it is generated first.
+    ordered = [l for l in languages if l["code"] == "en"] + [l for l in languages if l["code"] != "en"]
 
     footer = f"\n\n*Generated in part by SAIP, with patient consent where applicable.*\n*Note ID: ext-{request.encounter_id}*"
-    final_text = output.text + footer
+    notes_by_lang: dict[str, str] = {}
+    for lang in ordered:
+        lang_instructions = instructions
+        if lang["code"] != "en":
+            lang_instructions = (
+                f"{instructions}\n\n"
+                f"IMPORTANT: Write the ENTIRE note in {lang['name']} ({lang['code']}). "
+                f"Translate all section headers and content into {lang['name']}. "
+                f"Keep clinical drug names and standardized codes as-is."
+            )
+        out = generate_note(
+            model=settings.DEFAULT_NOTE_GENERATION_MODEL,
+            instructions=lang_instructions,
+            context=None,
+            transcript=request.transcript,
+            output_type="Markdown",
+        )
+        notes_by_lang[lang["code"]] = out.text + footer
+
+    # Primary text (English if present, else the first generated variant).
+    primary_code = "en" if "en" in notes_by_lang else ordered[0]["code"]
+    final_text = notes_by_lang.get(primary_code, "")
 
     # Persist DraftNote to the encounter if it exists in the DB
     try:
@@ -1047,18 +1150,20 @@ async def extension_generate(
                     if existing_note.inactivated is None and existing_note.definition_id == note_def.id:
                         existing_note.inactivated = now
 
-                draft_note = db.DraftNote(
-                    id=db.next_sqid(database),
-                    encounter_id=enc.id,
-                    definition_id=note_def.id,
-                    definition_version=note_def.version,
-                    created=now,
-                    title=note_def.title,
-                    model=settings.DEFAULT_NOTE_GENERATION_MODEL,
-                    content=final_text,
-                    output_type="Markdown",
-                )
-                database.add(draft_note)
+                # Persist one DraftNote row per language variant (language tagged on the row).
+                for code, text in notes_by_lang.items():
+                    database.add(db.DraftNote(
+                        id=db.next_sqid(database),
+                        encounter_id=enc.id,
+                        definition_id=note_def.id,
+                        definition_version=note_def.version,
+                        created=now,
+                        title=note_def.title,
+                        model=settings.DEFAULT_NOTE_GENERATION_MODEL,
+                        content=text,
+                        output_type="Markdown",
+                        language=code,
+                    ))
                 enc.modified = now
                 database.commit()
 
@@ -1093,7 +1198,12 @@ async def extension_generate(
     except Exception as e:
         logger.error(f"Failed to persist draft note: {e}")
 
-    return GenerateResponse(note=ClinicalNoteOutput(raw=final_text))
+    return GenerateResponse(
+        note=ClinicalNoteOutput(raw=final_text),
+        languages=[DetectedLanguage(**l) for l in ordered],
+        primaryLanguage=primary_code,
+        notesByLanguage=notes_by_lang,
+    )
 
 
 # =============================================================================
@@ -1389,6 +1499,10 @@ FORM_SCHEMAS: dict[str, dict] = {
     },
 }
 
+class FormLanguage(BaseModel):
+    name: str
+    code: str
+
 class FormAnswersRequest(BaseModel):
     formType: str
     formContext: str = ""
@@ -1396,6 +1510,9 @@ class FormAnswersRequest(BaseModel):
     clinicalNote: str
     encounterId: str | None = None
     patientId: str | None = None
+    # When set to a non-English language, free-text answers are written in it (option/Yes-No/score
+    # values stay as the EHR expects so autofill still matches).
+    language: FormLanguage | None = None
 
 
 class FormAnswersResponse(BaseModel):
@@ -1405,8 +1522,13 @@ class FormAnswersResponse(BaseModel):
     confirmedProfileValues: dict | None = None
 
 
-def _generate_structured_fields(schema: dict, subject_label: str, subject_value: str, form_context: str, transcript: str, clinical_note: str) -> dict:
-    """Calls the configured AI service with a field-keyed schema and returns the parsed JSON fields dict."""
+def _generate_structured_fields(schema: dict, subject_label: str, subject_value: str, form_context: str, transcript: str, clinical_note: str, language_name: str | None = None) -> dict:
+    """Calls the configured AI service with a field-keyed schema and returns the parsed JSON fields dict.
+
+    When ``language_name`` is a non-English language, only FREE-TEXT/narrative answer values are
+    written in that language; controlled-option, Yes/No, and numeric 'Score' values are kept exactly
+    as the schema/EHR expects so downstream autofill still matches the form.
+    """
     import json as _json
     from app.config.ai import form_ai_service, form_ai_model
 
@@ -1452,6 +1574,15 @@ def _generate_structured_fields(schema: dict, subject_label: str, subject_value:
         "Return ONLY valid JSON. Return EVERY field defined in the schema.\n"
         "Do not return markdown. Do not return explanations."
     )
+
+    if language_name and language_name.strip().lower() not in ("english", "en"):
+        system_prompt += (
+            f"\nLANGUAGE: Write the values of FREE-TEXT / narrative fields (summaries, descriptions, "
+            f"explanations) in {language_name}. However, for fields with a controlled option list, "
+            f"Yes/No fields, numeric 'Score' fields, and dates, output the value EXACTLY as the "
+            f"schema/options specify (in English / the original code) — do NOT translate those, as "
+            f"they must match the EHR form's options verbatim."
+        )
 
     from datetime import date as _date
     user_prompt = (
@@ -1530,6 +1661,7 @@ async def extension_generate_form_answers(
     fields = _generate_structured_fields(
         schema, "FORM TYPE", request.formType,
         request.formContext, request.transcript, request.clinicalNote + confirmed_context,
+        language_name=request.language.name if request.language else None,
     )
 
     # Persist as FormAnswerSet (upsert: latest generation wins)
@@ -1863,6 +1995,7 @@ class EvaluationAnswersRequest(BaseModel):
     clinicalNote: str
     encounterId: str | None = None
     visitId: str | None = None    # fvid/visittemp_id from the EHR URL
+    language: FormLanguage | None = None
 
 
 class EvaluationAnswersResponse(BaseModel):
@@ -1887,6 +2020,7 @@ async def extension_generate_evaluation(
     fields = _generate_structured_fields(
         schema, "EVALUATION BUNDLE", request.bundleId,
         request.formContext, request.transcript, request.clinicalNote,
+        language_name=request.language.name if request.language else None,
     )
 
     # Persist as EvaluationBundleCache

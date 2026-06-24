@@ -110,7 +110,13 @@ export default defineBackground(() => {
         chrome.runtime
           .sendMessage({
             type: 'RECORDING_STATE',
-            payload: { active: !!active, sessionId: active?.sessionId, paused: active?.paused ?? false },
+            payload: {
+              active: !!active,
+              sessionId: active?.sessionId,
+              paused: active?.paused ?? false,
+              recordedMs: active?.recordedMs ?? 0,
+              lastResumedAt: active?.lastResumedAt,
+            },
           })
           .catch(() => {});
         void drainAll();
@@ -265,8 +271,10 @@ async function openRealtimeWs() {
         
         let safeText = event.text;
         if (safeText) {
-          // Keep only standard letters, numbers, whitespace, and basic punctuation
-          safeText = safeText.replace(/[^a-zA-Z0-9\s.,!?'"()\-:;“”‘’]/g, '');
+          // Keep letters/numbers in ANY script (incl. Devanagari/Hindi, etc.), whitespace and
+          // basic punctuation. The Unicode property escapes (\p{L}\p{N}) with the /u flag preserve
+          // non-Latin scripts that the old Latin-only filter stripped (which showed Hindi as "?").
+          safeText = safeText.replace(/[^\p{L}\p{N}\s.,!?'"()\-:;“”‘’]/gu, '');
         }
 
         if (event.type === 'delta' && safeText) {

@@ -15,6 +15,9 @@ export interface Encounter {
   audioUrl?: string;
   transcript?: string;
   generatedNote?: ClinicalNote;
+  /** Multilingual note variants (ISO code -> markdown), returned by /ext-encounters/{id}. */
+  notesByLanguage?: Record<string, string>;
+  languageCodes?: string[];
 }
 
 export interface ClinicalNote {
@@ -113,6 +116,10 @@ export interface TranscribeResponse {
 export interface GenerateResponse {
   encounterId: string;
   note: ClinicalNote;
+  /** Multilingual: note rendered per detected language (ISO code -> markdown). */
+  notesByLanguage?: Record<string, string>;
+  languages?: DetectedLanguage[];
+  primaryLanguage?: string;
 }
 
 // ─── Form Assistant Types ────────────────────────────────────────────────────
@@ -126,6 +133,11 @@ export interface DetectedForm {
   bundle?: string;
 }
 
+export interface DetectedLanguage {
+  name: string;
+  code: string;
+}
+
 export interface FormAnswersRequest {
   formType: string;
   formContext: string;   // document.body.innerText captured by content script
@@ -133,6 +145,9 @@ export interface FormAnswersRequest {
   clinicalNote: string;
   encounterId?: string;
   patientId?: string;
+  /** When set to a non-English language, free-text answers are written in it (option/Yes-No/score
+   *  values stay as the EHR expects so autofill still matches). */
+  language?: DetectedLanguage;
 }
 
 export interface FormAnswersResponse {
@@ -151,6 +166,7 @@ export interface EvaluationAnswersRequest {
   clinicalNote: string;
   encounterId?: string;
   visitId?: string;
+  language?: DetectedLanguage;
 }
 
 export interface EvaluationAnswersResponse {

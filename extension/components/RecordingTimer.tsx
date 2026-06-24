@@ -2,16 +2,25 @@ import React, { useState, useEffect } from 'react';
 
 interface Props {
   paused?: boolean;
+  /** Accumulated active recording time (ms), excluding paused spans. */
+  recordedMs?: number;
+  /** Epoch (ms) of the last start/resume; elapsed = recordedMs + (now - lastResumedAt). */
+  lastResumedAt?: number;
 }
 
-export default function RecordingTimer({ paused = false }: Props) {
-  const [seconds, setSeconds] = useState(0);
+export default function RecordingTimer({ paused = false, recordedMs = 0, lastResumedAt }: Props) {
+  // A tick to force re-render every 250ms while running; the displayed value is
+  // derived from the stopwatch props so it survives a panel close/reopen.
+  const [, setTick] = useState(0);
 
   useEffect(() => {
-    if (paused) return; // stop advancing while paused
-    const id = setInterval(() => setSeconds((s) => s + 1), 1000);
+    if (paused) return;
+    const id = setInterval(() => setTick((t) => t + 1), 250);
     return () => clearInterval(id);
-  }, [paused]);
+  }, [paused, lastResumedAt]);
+
+  const activeMs = paused || !lastResumedAt ? recordedMs : recordedMs + (Date.now() - lastResumedAt);
+  const seconds = Math.max(0, Math.floor(activeMs / 1000));
 
   const mm = String(Math.floor(seconds / 60)).padStart(2, '0');
   const ss = String(seconds % 60).padStart(2, '0');

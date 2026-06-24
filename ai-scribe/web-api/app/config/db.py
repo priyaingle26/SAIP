@@ -57,6 +57,26 @@ def get_database_session() -> Iterator[DatabaseSession]:
         yield database
 
 
+def ensure_schema_migrations() -> None:
+    """Apply idempotent, additive column migrations for already-existing databases.
+
+    ``Base.metadata.create_all`` never ALTERs an existing table, so a new nullable column on a
+    table that already exists (e.g. dev SQLite) must be added explicitly. Each statement runs in
+    its own transaction and is wrapped in try/except so a "column already exists" error on a
+    re-run is a no-op.
+    """
+    migrations = [
+        "ALTER TABLE draft_notes ADD COLUMN language VARCHAR(10)",
+    ]
+    for stmt in migrations:
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(stmt))
+            logger.info(f"Applied additive migration: {stmt}")
+        except Exception:
+            pass  # column already present — idempotent no-op
+
+
 useDatabase = Annotated[DatabaseSession, Depends(get_database_session)]
 
 
@@ -295,6 +315,8 @@ class DraftNote(Base):
     content: Mapped[str]
     inactivated: Mapped[datetime | None] = mapped_column(DATETIME_TYPE)
     output_type: Mapped[str] = mapped_column(VARCHAR(50))
+    # ISO-639-1 language code of this note variant (multilingual notes). NULL = legacy/primary.
+    language: Mapped[str | None] = mapped_column(VARCHAR(10))
     is_flagged: Mapped[bool] = mapped_column(default=False)
     comments: Mapped[str | None] = mapped_column(VARCHAR(500))
 

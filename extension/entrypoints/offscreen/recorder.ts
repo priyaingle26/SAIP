@@ -7,7 +7,7 @@
 // background sync queue drains those chunks from the same shared IndexedDB. We notify it
 // after each persist (live drain) and on stop (finalize once fully synced).
 
-import { putChunk, setSessionMeta, requestPersistentStorage, checkStorageQuota, touchSession, setSessionPaused } from '../../lib/durableStore';
+import { putChunk, setSessionMeta, requestPersistentStorage, checkStorageQuota, touchSession, markPaused, markResumed } from '../../lib/durableStore';
 
 const TARGET_SAMPLE_RATE = 24000; // OpenAI Realtime API requires 24 kHz mono PCM16
 const CHUNK_TIMESLICE_MS = 3000;  // 3-second slices balance request count vs latency
@@ -86,12 +86,15 @@ async function startRecording() {
     // Warn early if the device is already low on storage before we start writing chunks.
     void maybeWarnStorage();
     // Record the session so the sync queue can drain + finalize it even across evictions.
+    const startedAt = Date.now();
     await setSessionMeta({
       sessionId: currentSessionId,
       mimeType,
       status: 'recording',
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
+      createdAt: startedAt,
+      updatedAt: startedAt,
+      recordedMs: 0,
+      lastResumedAt: startedAt,
     });
 
     // 5s heartbeat keeps the session alive in the eyes of the background recovery check.
@@ -152,8 +155,9 @@ async function pauseRecording() {
   if (!mediaRecorder || mediaRecorder.state !== 'recording') return;
   isPaused = true;
   mediaRecorder.pause();
-  if (currentSessionId) await setSessionPaused(currentSessionId, true);
-  chrome.runtime.sendMessage({ type: 'RECORDING_PAUSED' });
+  let timing = { recordedMs: 0 } as { recordedMs: number; lastResumedAt?: number };
+  if (currentSessionId) timing = await markPaused(currentSessionId);
+  chrome.runtime.sendMessage({ type: 'RECORDING_PAUSED', payload: { recordedMs: timing.recordedMs } });
 }
 
 // ─── Resume recording after a break ──────────────────────────────────────────
@@ -161,8 +165,9 @@ async function resumeRecording() {
   if (!mediaRecorder || mediaRecorder.state !== 'paused') return;
   isPaused = false;
   mediaRecorder.resume();
-  if (currentSessionId) await setSessionPaused(currentSessionId, false);
-  chrome.runtime.sendMessage({ type: 'RECORDING_RESUMED' });
+  let timing = { recordedMs: 0, lastResumedAt: Date.now() } as { recordedMs: number; lastResumedAt?: number };
+  if (currentSessionId) timing = await markResumed(currentSessionId);
+  chrome.runtime.sendMessage({ type: 'RECORDING_RESUMED', payload: { recordedMs: timing.recordedMs, lastResumedAt: timing.lastResumedAt } });
 }
 
 // ─── Discard: stop + release mic WITHOUT handing off to finalize ──────────────

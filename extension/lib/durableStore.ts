@@ -35,6 +35,10 @@ export interface SessionMeta {
   updatedAt?: number;
   /** True while the clinician has paused the recording (e.g. a break). */
   paused?: boolean;
+  /** Accumulated ACTIVE recording time (ms), excluding paused spans. Updated on each pause. */
+  recordedMs?: number;
+  /** Epoch (ms) of the last start/resume. Live elapsed = recordedMs + (now - lastResumedAt). */
+  lastResumedAt?: number;
 }
 
 interface ChunkRecord {
@@ -273,11 +277,28 @@ export async function listActiveSessions(): Promise<SessionMeta[]> {
     .map((r) => r.meta);
 }
 
-/** Update the paused flag without touching other session fields. No-op if the session is gone. */
-export async function setSessionPaused(sessionId: string, paused: boolean): Promise<void> {
+export interface TimerState {
+  recordedMs: number;
+  lastResumedAt?: number;
+}
+
+/** Record a pause: fold the current active span into recordedMs and set paused. */
+export async function markPaused(sessionId: string): Promise<TimerState> {
   const meta = await getSessionMeta(sessionId);
-  if (!meta) return;
-  await setSessionMeta({ ...meta, paused, updatedAt: Date.now() });
+  if (!meta) return { recordedMs: 0 };
+  const now = Date.now();
+  const recordedMs = (meta.recordedMs ?? 0) + (meta.lastResumedAt ? now - meta.lastResumedAt : 0);
+  await setSessionMeta({ ...meta, paused: true, recordedMs, updatedAt: now });
+  return { recordedMs, lastResumedAt: undefined };
+}
+
+/** Record a resume: start a fresh active span from now. */
+export async function markResumed(sessionId: string): Promise<TimerState> {
+  const meta = await getSessionMeta(sessionId);
+  const now = Date.now();
+  if (!meta) return { recordedMs: 0, lastResumedAt: now };
+  await setSessionMeta({ ...meta, paused: false, lastResumedAt: now, updatedAt: now });
+  return { recordedMs: meta.recordedMs ?? 0, lastResumedAt: now };
 }
 
 /** Remove all chunks and metadata for a session after the server confirms finalize. */

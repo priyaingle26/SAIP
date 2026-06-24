@@ -227,6 +227,7 @@ class AuroraPostgresProvider(DatabaseProvider):
                 content TEXT NOT NULL,
                 inactivated TIMESTAMP WITH TIME ZONE NULL,
                 output_type VARCHAR(50) NOT NULL,
+                language VARCHAR(10),
                 is_flagged BOOLEAN DEFAULT FALSE,
                 comments VARCHAR(500),
                 FOREIGN KEY (definition_id, definition_version) REFERENCES note_definitions(id, version)

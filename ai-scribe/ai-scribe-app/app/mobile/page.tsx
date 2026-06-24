@@ -56,6 +56,14 @@ type ProfileField = {
 };
 type Tab = "record" | "note" | "history" | "patient";
 
+// Display names for the language toggle (ISO-639-1 → English name). Falls back to the code.
+const LANG_NAMES: Record<string, string> = {
+  en: "English", hi: "Hindi", es: "Spanish", fr: "French", de: "German", pt: "Portuguese",
+  zh: "Chinese", ar: "Arabic", ru: "Russian", ja: "Japanese", ko: "Korean", bn: "Bengali",
+  pa: "Punjabi", ta: "Tamil", te: "Telugu", mr: "Marathi", gu: "Gujarati", ur: "Urdu",
+  it: "Italian", vi: "Vietnamese", tl: "Tagalog", fa: "Persian", pl: "Polish",
+};
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function getApiUrl(path: string) {
   const base = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
@@ -232,6 +240,9 @@ export default function MobileApp() {
   const [generatedNote, setGeneratedNote] = useState<{ raw: string } | null>(null);
   const [isEditingNote, setIsEditingNote] = useState(false);
   const [editedNoteContent, setEditedNoteContent] = useState("");
+  // Multilingual notes: per-language markdown variants + currently viewed language.
+  const [notesByLanguage, setNotesByLanguage] = useState<Record<string, string>>({});
+  const [selectedLanguage, setSelectedLanguage] = useState<string>("en");
 
   // ── Durable recording lifecycle state ────────────────────────────────────────
   const [isPaused, setIsPaused] = useState(false);
@@ -301,8 +312,13 @@ export default function MobileApp() {
       const gen = await apiGenerate(fin.data.encounterId, fin.data.transcript, meta.patientId);
       setTranscript(fin.data.transcript);
       if (gen.ok && gen.data) {
-        setGeneratedNote(gen.data.note);
-        setEditedNoteContent(gen.data.note.raw);
+        const map = gen.data.notesByLanguage ?? {};
+        const primary = gen.data.primaryLanguage ?? "en";
+        setNotesByLanguage(map);
+        setSelectedLanguage(primary);
+        const note = map[primary] ? { raw: map[primary] } : gen.data.note;
+        setGeneratedNote(note);
+        setEditedNoteContent(note.raw);
         setActiveTab("note");
       }
       setIsProcessing(false);
@@ -432,6 +448,7 @@ export default function MobileApp() {
 
   async function startRecording() {
     setTranscript(""); setGeneratedNote(null); setEditedNoteContent(""); setIsEditingNote(false); setProcessingError("");
+    setNotesByLanguage({}); setSelectedLanguage("en");
     markOfflineSaved(false);
     await ensureRecorder().start(selectedPatient?.id);
   }
@@ -889,6 +906,27 @@ export default function MobileApp() {
                   </button>
                 </div>
 
+                {/* Language toggle — shown only when the note exists in more than one language. */}
+                {Object.keys(notesByLanguage).length > 1 && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: T.muted }}>Language</span>
+                    <select
+                      aria-label="Note language"
+                      value={selectedLanguage}
+                      onChange={(e) => {
+                        const code = e.target.value;
+                        setSelectedLanguage(code);
+                        if (notesByLanguage[code]) { setGeneratedNote({ raw: notesByLanguage[code] }); setEditedNoteContent(notesByLanguage[code]); }
+                      }}
+                      style={{ ...INPUT_STYLE, width: "auto", padding: "6px 10px", fontSize: 13 }}
+                    >
+                      {Object.keys(notesByLanguage).map((code) => (
+                        <option key={code} value={code}>{LANG_NAMES[code] ?? code.toUpperCase()}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
                 {isEditingNote ? (
                   <textarea
                     value={editedNoteContent}
@@ -952,6 +990,7 @@ export default function MobileApp() {
                   setTranscript(enc.transcript || "");
                   setGeneratedNote(enc.generatedNote);
                   if (enc.generatedNote) setEditedNoteContent(enc.generatedNote.raw);
+                  setNotesByLanguage({}); setSelectedLanguage("en");
                   setIsEditingNote(false);
                   setActiveTab("note");
                 }}

@@ -22,6 +22,9 @@ interface Props {
   /** Confirmed patient profile values (fieldKey → value). Silently pre-fills
    *  matching form fields without showing the "complete manually" note. */
   confirmedProfileValues?: Record<string, string>;
+  /** Selected note language — free-text answers are generated in it (option/Yes-No/score
+   *  values stay as the EHR expects). Undefined/English → no translation. */
+  language?: { code: string; name: string };
 }
 
 type Step = 'detect' | 'generating' | 'review' | 'filling' | 'done' | 'error';
@@ -30,7 +33,7 @@ function toLabel(key: string): string {
   return key.replace(/([A-Z])/g, ' $1').replace(/^./, (s) => s.toUpperCase());
 }
 
-export default function FormAssistant({ transcript, clinicalNote, patientId, confirmedProfileValues: confirmedProfileValuesProp }: Props) {
+export default function FormAssistant({ transcript, clinicalNote, patientId, confirmedProfileValues: confirmedProfileValuesProp, language }: Props) {
   const [step, setStep] = useState<Step>('detect');
   const [detectedForm, setDetectedForm] = useState<DetectedForm | null>(null);
   const [selectedFormType, setSelectedFormType] = useState('');
@@ -132,7 +135,7 @@ export default function FormAssistant({ transcript, clinicalNote, patientId, con
       if (cached) {
         allFields = cached.fields;
       } else {
-        const result = await generateEvaluation({ bundleId, formContext, transcript, clinicalNote });
+        const result = await generateEvaluation({ bundleId, formContext, transcript, clinicalNote, language });
         if (!result.success || !result.data) {
           setError(result.error ?? 'Evaluation generation failed.');
           setStep('detect');
@@ -149,7 +152,7 @@ export default function FormAssistant({ transcript, clinicalNote, patientId, con
       return;
     }
 
-    const result = await generateFormAnswers({ formType, formContext, transcript, clinicalNote, patientId });
+    const result = await generateFormAnswers({ formType, formContext, transcript, clinicalNote, patientId, language });
     if (!result.success || !result.data) {
       setError(result.error ?? 'Generation failed.');
       setStep('detect');
