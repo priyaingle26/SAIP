@@ -729,7 +729,9 @@ class FinalizeResponse(BaseModel):
 
 @router.post("/transcribe-finalize")
 async def extension_transcribe_finalize(
-    transcript: str = Form(...),
+    # Optional: a fully-offline session has no streamed transcript and relies entirely on
+    # server-side re-transcription (retranscribe=True), so an empty/absent value is valid.
+    transcript: str = Form(""),
     encounter_id: str | None = Form(None),
     patient_id: str | None = Form(None),
     session_id: str | None = Form(None),
