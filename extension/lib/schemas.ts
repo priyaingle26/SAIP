@@ -71,6 +71,14 @@ export type MessageType =
   | 'STORAGE_WARNING'
   | 'GET_RECORDING_STATE'
   | 'RECORDING_STATE'
+  // Pause / resume
+  | 'PAUSE_RECORDING'
+  | 'RESUME_RECORDING'
+  | 'RECORDING_PAUSED'
+  | 'RECORDING_RESUMED'
+  // Session deletion / discard
+  | 'DISCARD_RECORDING'
+  | 'DELETE_SESSION'
   // Live streaming
   | 'STREAM_START'
   | 'STREAM_DELTA'

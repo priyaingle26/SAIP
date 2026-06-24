@@ -355,6 +355,34 @@ export async function confirmProfileField(
   }
 }
 
+// ─── Delete server-side chunks for a not-yet-finalized session ───────────────
+export async function deleteServerSession(sessionId: string): Promise<boolean> {
+  try {
+    const token = await getAuthToken();
+    const res = await fetch(SAIP_ENDPOINTS.deleteSession(sessionId), {
+      method: 'DELETE',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+// ─── Delete a finalized encounter and its stored recording ────────────────────
+export async function deleteEncounter(encounterId: string): Promise<boolean> {
+  try {
+    const token = await getAuthToken();
+    const res = await fetch(SAIP_ENDPOINTS.deleteEncounter(encounterId), {
+      method: 'DELETE',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 // ─── Post an autofill audit entry ────────────────────────────────────────────
 export async function postAutofillAudit(
   encounterId: string | undefined,

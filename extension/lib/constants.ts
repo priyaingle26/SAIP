@@ -22,6 +22,8 @@ export const SAIP_ENDPOINTS = {
   // Extension-format encounter endpoints (extension_api.py)
   encounters: `${SAIP_BASE_URL}/ext-encounters`,
   encounter: (id: string) => `${SAIP_BASE_URL}/ext-encounters/${id}`,
+  deleteEncounter: (id: string) => `${SAIP_BASE_URL}/ext-encounters/${id}`,
+  deleteSession: (sessionId: string) => `${SAIP_BASE_URL}/transcribe-session?session_id=${encodeURIComponent(sessionId)}`,
   notes: (id: string) => `${SAIP_BASE_URL}/notes/${id}`,
   login: `${SAIP_BASE_URL}/auth/login`,
   me: `${SAIP_BASE_URL}/auth/me`,

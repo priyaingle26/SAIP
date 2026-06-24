@@ -1,5 +1,5 @@
 
-import { transcribeAudio, generateNote, fetchEncounters, finalizeStream, checkStreamingStatus, getStreamTicket } from '../lib/apiClient';
+import { transcribeAudio, generateNote, fetchEncounters, finalizeStream, checkStreamingStatus, getStreamTicket, deleteServerSession, deleteEncounter } from '../lib/apiClient';
 import { verifyToken, getAuthToken } from '../lib/auth';
 import { STORAGE_KEYS, SAIP_ENDPOINTS } from '../lib/constants';
 import { drainAll, setFinalizeHandler, setStatusReporter } from '../lib/syncQueue';
@@ -8,6 +8,9 @@ import {
   getSessionMeta,
   getSyncSummary,
   listActiveSessions,
+  deleteSession,
+  addDeletionTombstone,
+  clearDeletionTombstone,
   type SessionMeta,
 } from '../lib/durableStore';
 import type { ExtensionMessage, Encounter, StreamFinalizedPayload } from '../lib/schemas';
@@ -105,10 +108,18 @@ export default defineBackground(() => {
         await recoverStaleRecordingSessions(); // finalize any abandoned recording first
         const active = await getActiveRecordingSession();
         chrome.runtime
-          .sendMessage({ type: 'RECORDING_STATE', payload: { active: !!active, sessionId: active?.sessionId } })
+          .sendMessage({
+            type: 'RECORDING_STATE',
+            payload: { active: !!active, sessionId: active?.sessionId, paused: active?.paused ?? false },
+          })
           .catch(() => {});
         void drainAll();
       })();
+    }
+    if (message?.type === 'DELETE_SESSION') {
+      void handleDeleteSession(
+        (message as { type: string; payload: { kind: 'session' | 'encounter'; id: string } }).payload,
+      );
     }
   });
   // Recover any session stranded mid-recording by a crash, then resume the backlog.
@@ -402,11 +413,50 @@ async function markSessionPendingFinalize(sessionId: string, mimeType: string) {
   }
 }
 
+// ─── Session / encounter deletion ────────────────────────────────────────────
+// Tombstone is written FIRST so that a finalize already in flight is aborted (delete-wins).
+
+const deletedSessionIds = new Set<string>();
+
+async function handleDeleteSession(payload: { kind: 'session' | 'encounter'; id: string }) {
+  const { kind, id } = payload;
+
+  // 1. Write tombstone FIRST — delete-wins even if finalize is in flight.
+  await addDeletionTombstone(id, kind);
+  deletedSessionIds.add(id);
+
+  if (kind === 'session') {
+    // 2a. Quiesce any active/paused capture for this session (or any active session if ids match).
+    const active = await getActiveRecordingSession();
+    if (active && (active.sessionId === id || !id)) {
+      chrome.runtime
+        .sendMessage({ target: 'offscreen', type: 'DISCARD_RECORDING' })
+        .catch(() => {});
+      await closeOffscreenIfIdle();
+    }
+    // 3a. Purge local durable store (chunks + meta).
+    await deleteSession(id).catch(() => {});
+    // 4a. Delete server-side chunks; keep tombstone if offline (sync queue drains it later).
+    const ok = await deleteServerSession(id);
+    if (ok) await clearDeletionTombstone(id, 'session');
+  } else {
+    // 2b. Delete encounter + recording file + transcript/note from the server.
+    const ok = await deleteEncounter(id);
+    if (ok) await clearDeletionTombstone(id, 'encounter');
+    // 3b. Remove from local encounters cache.
+    const result = await chrome.storage.local.get('saip_encounters');
+    const list = (result['saip_encounters'] ?? []) as Array<{ id: string }>;
+    await chrome.storage.local.set({ saip_encounters: list.filter((e) => e.id !== id) });
+  }
+}
+
 // ─── Finalize a fully-uploaded session: label + persist + generate note ──────
 // Returns true on success (the sync queue then deletes the durable session); false to
 // retry on the next drain (e.g. transient network failure / still offline).
 
 async function finalizeSession(meta: SessionMeta): Promise<boolean> {
+  // Delete-wins: if the session was deleted while finalize was in flight, drop it.
+  if (deletedSessionIds.has(meta.sessionId)) return true; // treat as done so the queue removes it
   try {
     const result = await finalizeStream(
       meta.sessionId,

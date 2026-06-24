@@ -275,6 +275,65 @@ async def ext_get_encounter(
     )
 
 
+# --- Session / Encounter Deletion Endpoints ---
+
+@router.delete("/transcribe-session")
+async def delete_transcribe_session(
+    session_id: str = Query(...),
+    session: WebAPISession = Depends(get_current_session),
+) -> dict:
+    """Remove uploaded chunks for a not-yet-finalized session. Idempotent."""
+    _cleanup_chunks(session_id)
+    logger.info(f"AUDIT PHI_DELETE user={session.username!r} resource=session/{session_id!r}")
+    return {"ok": True}
+
+
+@router.delete("/ext-encounters/{encounter_id}")
+async def delete_ext_encounter(
+    encounter_id: str,
+    session: WebAPISession = Depends(get_current_session),
+    database: db.DatabaseSession = Depends(db.get_database_session),
+) -> dict:
+    """Remove a finalized encounter — recording file, transcript, notes, and row. Idempotent."""
+    from sqlalchemy.orm import selectinload
+    enc = database.execute(
+        select(db.Encounter)
+        .where(
+            db.Encounter.id == encounter_id,
+            db.Encounter.username == session.username,
+        )
+        .options(
+            selectinload(db.Encounter.recording),
+            selectinload(db.Encounter.draft_notes),
+        )
+    ).scalar_one_or_none()
+
+    if not enc:
+        # Idempotent — already gone is success
+        return {"ok": True}
+
+    # Delete stored recording file from the storage provider (local disk or S3).
+    if enc.recording:
+        try:
+            from app.config.storage import delete_recording
+            delete_recording(session.username, enc.recording.id)
+        except Exception:
+            pass  # missing file is not fatal — we still remove the DB row
+
+    # Inactivate draft notes.
+    now = datetime.now(timezone.utc).astimezone()
+    for note in enc.draft_notes:
+        note.inactivated = now
+
+    # Mark encounter purged (soft-delete to preserve audit trail).
+    enc.inactivated = now
+    enc.purged = now
+    database.commit()
+
+    logger.info(f"AUDIT PHI_DELETE user={session.username!r} resource=encounter/{encounter_id!r}")
+    return {"ok": True}
+
+
 # --- AI Endpoints ---
 
 def _ensure_user(database: db.DatabaseSession, username: str) -> None:

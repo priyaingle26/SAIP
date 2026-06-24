@@ -15,10 +15,13 @@ import {
   countPending,
   deleteSession,
   getSyncSummary,
+  listDeletionTombstones,
+  clearDeletionTombstone,
+  hasDeletionTombstone,
   type SessionMeta,
   type SyncSummary,
 } from './durableStore';
-import { uploadChunk, getSessionReceivedSeqs } from './apiClient';
+import { uploadChunk, getSessionReceivedSeqs, deleteServerSession, deleteEncounter } from './apiClient';
 
 // Called when a session's audio is fully uploaded and it is ready to finalize.
 // Returns true on success (durable session is then deleted), false to retry later.
@@ -99,6 +102,8 @@ export async function drainAll(): Promise<void> {
       rerun = false;
       const sessions = await listActiveSessions();
       for (const meta of sessions) {
+        // Delete-wins: skip sessions that have a pending deletion tombstone.
+        if (await hasDeletionTombstone(meta.sessionId, 'session')) continue;
         const fullyUploaded = await drainSession(meta);
         await reportStatus(true);
         if (!fullyUploaded) continue;
@@ -107,9 +112,25 @@ export async function drainAll(): Promise<void> {
           if (done) await deleteSession(meta.sessionId);
         }
       }
+      // Drain pending deletion tombstones (offline deletes that need server reconcile).
+      await drainTombstones();
     } while (rerun);
   } finally {
     draining = false;
     await reportStatus(false);
+  }
+}
+
+/** Issue server-side deletes for any tombstones written while offline. */
+async function drainTombstones(): Promise<void> {
+  const tombstones = await listDeletionTombstones();
+  for (const t of tombstones) {
+    let ok = false;
+    if (t.kind === 'session') {
+      ok = await deleteServerSession(t.id);
+    } else {
+      ok = await deleteEncounter(t.id);
+    }
+    if (ok) await clearDeletionTombstone(t.id, t.kind);
   }
 }

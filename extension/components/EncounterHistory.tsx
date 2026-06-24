@@ -5,6 +5,7 @@ import { HistoryIcon } from './ui';
 interface Props {
   encounters: Encounter[];
   onSelect: (encounter: Encounter) => void;
+  onDelete?: (encounterId: string) => void;
 }
 
 type Status = Encounter['status'];
@@ -16,7 +17,7 @@ const STATUS_CONFIG: Record<Status, { label: string; bg: string; border: string;
   autofilled:  { label: 'Autofilled',  bg: 'var(--color-success-bg)',     border: 'var(--color-success-border)',     color: 'var(--color-success)' },
 };
 
-export default function EncounterHistory({ encounters, onSelect }: Props) {
+export default function EncounterHistory({ encounters, onSelect, onDelete }: Props) {
   if (!encounters.length) {
     return (
       <div
@@ -50,82 +51,128 @@ export default function EncounterHistory({ encounters, onSelect }: Props) {
       {encounters.map((enc) => {
         const sc = STATUS_CONFIG[enc.status] ?? STATUS_CONFIG.pending;
         return (
-          <button
+          <div
             key={enc.id}
-            id={`saip-encounter-${enc.id}`}
             role="listitem"
-            onClick={() => onSelect(enc)}
-            style={{
-              display: 'block',
-              textAlign: 'left',
-              width: '100%',
-              background: 'var(--color-surface)',
-              border: '1px solid var(--color-border)',
-              borderRadius: 'var(--radius-md)',
-              padding: 'var(--space-3)',
-              cursor: 'pointer',
-              color: 'var(--color-foreground)',
-              transition: 'border-color var(--motion-fast), box-shadow var(--motion-fast)',
-              boxShadow: 'var(--shadow-sm)',
-              outline: 'none',
-            }}
-            onFocus={(e) => {
-              (e.target as HTMLElement).style.outline = '2px solid var(--color-ring)';
-              (e.target as HTMLElement).style.outlineOffset = '2px';
-            }}
-            onBlur={(e) => {
-              (e.target as HTMLElement).style.outline = 'none';
-            }}
-            onMouseEnter={(e) => {
-              (e.currentTarget).style.borderColor = 'var(--color-primary-subtle-border)';
-              (e.currentTarget).style.boxShadow = 'var(--shadow-md)';
-            }}
-            onMouseLeave={(e) => {
-              (e.currentTarget).style.borderColor = 'var(--color-border)';
-              (e.currentTarget).style.boxShadow = 'var(--shadow-sm)';
-            }}
+            style={{ position: 'relative' }}
           >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 'var(--space-1)' }}>
-              <span style={{ fontSize: 'var(--text-base)', fontWeight: 600, color: 'var(--color-foreground)' }}>
-                {enc.clientName || 'Session'}
-              </span>
-              <span
-                style={{
-                  fontSize: 'var(--text-xs)',
-                  fontWeight: 700,
-                  textTransform: 'uppercase',
-                  letterSpacing: '0.05em',
-                  padding: '2px 8px',
-                  borderRadius: 'var(--radius-full)',
-                  background: sc.bg,
-                  color: sc.color,
-                  border: `1px solid ${sc.border}`,
-                  flexShrink: 0,
-                  marginLeft: 'var(--space-2)',
-                }}
-              >
-                {sc.label}
-              </span>
-            </div>
-            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--color-muted-2)', marginBottom: 'var(--space-1)' }}>
-              {new Date(enc.date).toLocaleString()}
-            </div>
-            {enc.transcript && (
-              <div
-                style={{
-                  fontSize: 'var(--text-sm)',
-                  color: 'var(--color-muted)',
-                  lineHeight: 'var(--leading-normal)',
-                  overflow: 'hidden',
-                  display: '-webkit-box',
-                  WebkitLineClamp: 2,
-                  WebkitBoxOrient: 'vertical' as const,
-                }}
-              >
-                {enc.transcript.slice(0, 120)}
+            <button
+              id={`saip-encounter-${enc.id}`}
+              onClick={() => onSelect(enc)}
+              style={{
+                display: 'block',
+                textAlign: 'left',
+                width: '100%',
+                background: 'var(--color-surface)',
+                border: '1px solid var(--color-border)',
+                borderRadius: 'var(--radius-md)',
+                padding: 'var(--space-3)',
+                paddingRight: onDelete ? 'calc(var(--space-3) + 36px)' : 'var(--space-3)',
+                cursor: 'pointer',
+                color: 'var(--color-foreground)',
+                transition: 'border-color var(--motion-fast), box-shadow var(--motion-fast)',
+                boxShadow: 'var(--shadow-sm)',
+                outline: 'none',
+              }}
+              onFocus={(e) => {
+                (e.target as HTMLElement).style.outline = '2px solid var(--color-ring)';
+                (e.target as HTMLElement).style.outlineOffset = '2px';
+              }}
+              onBlur={(e) => {
+                (e.target as HTMLElement).style.outline = 'none';
+              }}
+              onMouseEnter={(e) => {
+                (e.currentTarget).style.borderColor = 'var(--color-primary-subtle-border)';
+                (e.currentTarget).style.boxShadow = 'var(--shadow-md)';
+              }}
+              onMouseLeave={(e) => {
+                (e.currentTarget).style.borderColor = 'var(--color-border)';
+                (e.currentTarget).style.boxShadow = 'var(--shadow-sm)';
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 'var(--space-1)' }}>
+                <span style={{ fontSize: 'var(--text-base)', fontWeight: 600, color: 'var(--color-foreground)' }}>
+                  {enc.clientName || 'Session'}
+                </span>
+                <span
+                  style={{
+                    fontSize: 'var(--text-xs)',
+                    fontWeight: 700,
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.05em',
+                    padding: '2px 8px',
+                    borderRadius: 'var(--radius-full)',
+                    background: sc.bg,
+                    color: sc.color,
+                    border: `1px solid ${sc.border}`,
+                    flexShrink: 0,
+                    marginLeft: 'var(--space-2)',
+                  }}
+                >
+                  {sc.label}
+                </span>
               </div>
+              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--color-muted-2)', marginBottom: 'var(--space-1)' }}>
+                {new Date(enc.date).toLocaleString()}
+              </div>
+              {enc.transcript && (
+                <div
+                  style={{
+                    fontSize: 'var(--text-sm)',
+                    color: 'var(--color-muted)',
+                    lineHeight: 'var(--leading-normal)',
+                    overflow: 'hidden',
+                    display: '-webkit-box',
+                    WebkitLineClamp: 2,
+                    WebkitBoxOrient: 'vertical' as const,
+                  }}
+                >
+                  {enc.transcript.slice(0, 120)}
+                </div>
+              )}
+            </button>
+
+            {/* Delete button — positioned over the encounter card, top-right */}
+            {onDelete && (
+              <button
+                type="button"
+                aria-label={`Delete encounter ${enc.clientName || 'Session'}`}
+                title="Delete encounter"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onDelete(enc.id);
+                }}
+                style={{
+                  position: 'absolute',
+                  top: 'var(--space-2)',
+                  right: 'var(--space-2)',
+                  width: 28,
+                  height: 28,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  background: 'transparent',
+                  border: 'none',
+                  borderRadius: 'var(--radius-sm)',
+                  color: 'var(--color-muted)',
+                  cursor: 'pointer',
+                  fontSize: 14,
+                  lineHeight: 1,
+                  transition: 'color var(--motion-fast), background var(--motion-fast)',
+                }}
+                onMouseEnter={(e) => {
+                  (e.currentTarget).style.color = 'var(--color-destructive)';
+                  (e.currentTarget).style.background = 'var(--color-destructive-bg)';
+                }}
+                onMouseLeave={(e) => {
+                  (e.currentTarget).style.color = 'var(--color-muted)';
+                  (e.currentTarget).style.background = 'transparent';
+                }}
+              >
+                🗑
+              </button>
             )}
-          </button>
+          </div>
         );
       })}
     </div>

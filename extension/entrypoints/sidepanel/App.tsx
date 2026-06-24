@@ -185,6 +185,8 @@ export default function App() {
   const [loggingIn, setLoggingIn] = useState(false);
 
   const [isRecording, setIsRecording] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [processingStep, setProcessingStep] = useState('');
   const [processingError, setProcessingError] = useState('');
@@ -327,12 +329,22 @@ export default function App() {
         }
 
         case 'RECORDING_STATE': {
-          // A live recording is still in progress (panel was reopened) → restore the
-          // recording UI so the user can Stop it. If not active, the worker finalizes it.
-          const p = message.payload as { active: boolean; sessionId?: string };
-          if (p.active) setIsRecording(true);
+          const p = message.payload as { active: boolean; sessionId?: string; paused?: boolean };
+          if (p.active) {
+            setIsRecording(true);
+            setIsPaused(p.paused ?? false);
+            if (p.sessionId) setActiveSessionId(p.sessionId);
+          }
           break;
         }
+
+        case 'RECORDING_PAUSED':
+          setIsPaused(true);
+          break;
+
+        case 'RECORDING_RESUMED':
+          setIsPaused(false);
+          break;
 
         case 'ERROR':
           setIsProcessing(false);
@@ -420,10 +432,41 @@ export default function App() {
 
   const handleStopRecording = useCallback(() => {
     setIsRecording(false);
+    setIsPaused(false);
+    setActiveSessionId(null);
     setIsProcessing(true);
     setProcessingStep(isStreaming ? 'Finalizing & labeling transcript…' : 'Uploading & transcribing audio…');
     chrome.runtime.sendMessage({ target: 'offscreen', type: 'STOP_RECORDING' });
   }, [isStreaming]);
+
+  const handlePause = useCallback(() => {
+    chrome.runtime.sendMessage({ target: 'offscreen', type: 'PAUSE_RECORDING' });
+  }, []);
+
+  const handleResume = useCallback(() => {
+    chrome.runtime.sendMessage({ target: 'offscreen', type: 'RESUME_RECORDING' });
+  }, []);
+
+  const handleDiscard = useCallback(() => {
+    if (!window.confirm('Discard this recording? All captured audio will be deleted and no note will be created.')) return;
+    setIsRecording(false);
+    setIsPaused(false);
+    setActiveSessionId(null);
+    setIsProcessing(false);
+    // If we know the session id, send it to background for tombstone + server cleanup.
+    if (activeSessionId) {
+      chrome.runtime.sendMessage({ type: 'DELETE_SESSION', payload: { kind: 'session', id: activeSessionId } });
+    } else {
+      // No id yet (just started) — just quiesce the recorder.
+      chrome.runtime.sendMessage({ target: 'offscreen', type: 'DISCARD_RECORDING' });
+    }
+  }, [activeSessionId]);
+
+  const handleDeleteEncounter = useCallback((encounterId: string) => {
+    if (!window.confirm('Permanently delete this encounter? The recording, transcript, and note will be removed and cannot be recovered.')) return;
+    setEncounters((prev) => prev.filter((e) => e.id !== encounterId));
+    chrome.runtime.sendMessage({ type: 'DELETE_SESSION', payload: { kind: 'encounter', id: encounterId } });
+  }, []);
 
   const handleFileUpload = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
     const input = event.target;
@@ -737,9 +780,13 @@ export default function App() {
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  background: isRecording ? 'var(--color-destructive-bg)' : 'var(--color-primary-subtle)',
-                  border: `2px solid ${isRecording ? 'var(--color-destructive-border)' : 'var(--color-primary-subtle-border)'}`,
-                  animation: isRecording ? 'saip-pulse-ring-rec 1.6s ease-in-out infinite' : 'none',
+                  background: isRecording
+                    ? (isPaused ? 'var(--color-warning-bg, #fef3c7)' : 'var(--color-destructive-bg)')
+                    : 'var(--color-primary-subtle)',
+                  border: `2px solid ${isRecording
+                    ? (isPaused ? 'var(--color-warning-border, #fcd34d)' : 'var(--color-destructive-border)')
+                    : 'var(--color-primary-subtle-border)'}`,
+                  animation: isRecording && !isPaused ? 'saip-pulse-ring-rec 1.6s ease-in-out infinite' : 'none',
                   transition: 'background var(--motion-slow), border-color var(--motion-slow)',
                 }}
               >
@@ -748,9 +795,11 @@ export default function App() {
                   background: 'var(--color-surface)',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   boxShadow: 'var(--shadow-md)',
-                  color: isRecording ? 'var(--color-destructive)' : 'var(--color-primary)',
+                  color: isRecording
+                    ? (isPaused ? 'var(--color-warning, #b45309)' : 'var(--color-destructive)')
+                    : 'var(--color-primary)',
                 }}>
-                  {isRecording ? <RecordingTimer /> : <MicIcon size={32} />}
+                  {isRecording ? <RecordingTimer paused={isPaused} /> : <MicIcon size={32} />}
                 </div>
               </div>
 
@@ -803,15 +852,52 @@ export default function App() {
                 </div>
               )}
               {isRecording && (
-                <Button
-                  id="saip-stop-btn"
-                  variant="destructive"
-                  size="lg"
-                  onClick={handleStopRecording}
-                  style={{ minWidth: 180 }}
-                >
-                  Stop &amp; Process
-                </Button>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)', alignItems: 'center' }}>
+                  <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
+                    {isPaused ? (
+                      <Button
+                        id="saip-resume-btn"
+                        variant="primary"
+                        size="lg"
+                        onClick={handleResume}
+                        style={{ minWidth: 140 }}
+                      >
+                        ▶ Resume
+                      </Button>
+                    ) : (
+                      <Button
+                        id="saip-pause-btn"
+                        variant="secondary"
+                        size="lg"
+                        onClick={handlePause}
+                        style={{ minWidth: 140 }}
+                      >
+                        ⏸ Pause
+                      </Button>
+                    )}
+                    <Button
+                      id="saip-stop-btn"
+                      variant="destructive"
+                      size="lg"
+                      onClick={handleStopRecording}
+                      style={{ minWidth: 140 }}
+                    >
+                      Stop &amp; Process
+                    </Button>
+                  </div>
+                  <button
+                    type="button"
+                    id="saip-discard-btn"
+                    onClick={handleDiscard}
+                    style={{
+                      background: 'none', border: 'none', cursor: 'pointer',
+                      fontSize: 'var(--text-xs)', color: 'var(--color-muted)',
+                      textDecoration: 'underline', padding: 'var(--space-1)',
+                    }}
+                  >
+                    Discard recording
+                  </button>
+                </div>
               )}
               {isProcessing && (
                 syncStatus && !syncStatus.online && syncStatus.pendingChunks > 0 ? (
@@ -906,7 +992,7 @@ export default function App() {
 
         {/* ── History Tab ── */}
         {activeTab === 'history' && (
-          <EncounterHistory encounters={encounters} onSelect={handleSelectEncounter} />
+          <EncounterHistory encounters={encounters} onSelect={handleSelectEncounter} onDelete={handleDeleteEncounter} />
         )}
 
         {/* ── Patient Tab ── */}

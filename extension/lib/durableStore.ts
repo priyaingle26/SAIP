@@ -10,9 +10,10 @@
 // raw key material is never written to chrome.storage or localStorage.
 
 const DB_NAME = 'saip-durable';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const CHUNKS_STORE = 'chunks';
 const META_STORE = 'meta';
+const DELETIONS_STORE = 'deletions';
 const KEY_ID = 'aesKey';
 const IV_BYTES = 12; // 96-bit IV recommended for AES-GCM
 
@@ -28,10 +29,12 @@ export interface SessionMeta {
   retranscribe?: boolean;
   status: SessionStatus;
   createdAt: number;
-  /** Last time the recorder wrote a chunk for this session. Drives idle-based orphan
-   *  recovery: an actively-recording session keeps this fresh, so it is never treated
-   *  as abandoned regardless of how long the recording runs. */
+  /** Last time the recorder heartbeat for this session. Drives idle-based orphan
+   *  recovery: an active OR paused recording keeps this fresh (so it is never treated
+   *  as abandoned), while a genuinely closed one goes stale and is recovered. */
   updatedAt?: number;
+  /** True while the clinician has paused the recording (e.g. a break). */
+  paused?: boolean;
 }
 
 interface ChunkRecord {
@@ -63,6 +66,9 @@ function openDb(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains(META_STORE)) {
         db.createObjectStore(META_STORE, { keyPath: 'key' });
+      }
+      if (!db.objectStoreNames.contains(DELETIONS_STORE)) {
+        db.createObjectStore(DELETIONS_STORE, { keyPath: ['id', 'kind'] });
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -267,6 +273,13 @@ export async function listActiveSessions(): Promise<SessionMeta[]> {
     .map((r) => r.meta);
 }
 
+/** Update the paused flag without touching other session fields. No-op if the session is gone. */
+export async function setSessionPaused(sessionId: string, paused: boolean): Promise<void> {
+  const meta = await getSessionMeta(sessionId);
+  if (!meta) return;
+  await setSessionMeta({ ...meta, paused, updatedAt: Date.now() });
+}
+
 /** Remove all chunks and metadata for a session after the server confirms finalize. */
 export async function deleteSession(sessionId: string): Promise<void> {
   const records = await allChunks(sessionId);
@@ -281,4 +294,36 @@ export async function deleteSession(sessionId: string): Promise<void> {
         t.onerror = () => reject(t.error);
       }),
   );
+}
+
+// ─── Deletion tombstones (offline delete reconciliation) ─────────────────────
+// A tombstone records a pending server-side delete so the sync queue can drain
+// it when connectivity returns. Delete-wins: sessions with tombstones are skipped
+// at finalize; tombstones persist until the server confirms removal.
+
+export type DeletionKind = 'session' | 'encounter';
+
+export interface DeletionTombstone {
+  id: string;           // sessionId for 'session', encounterId for 'encounter'
+  kind: DeletionKind;
+}
+
+export async function addDeletionTombstone(id: string, kind: DeletionKind): Promise<void> {
+  await tx(DELETIONS_STORE, 'readwrite', (s) => s.put({ id, kind }));
+}
+
+export async function listDeletionTombstones(): Promise<DeletionTombstone[]> {
+  return tx<DeletionTombstone[]>(DELETIONS_STORE, 'readonly', (s) => s.getAll());
+}
+
+export async function clearDeletionTombstone(id: string, kind: DeletionKind): Promise<void> {
+  await tx(DELETIONS_STORE, 'readwrite', (s) => s.delete([id, kind]));
+}
+
+/** Check if a session has a pending deletion tombstone (delete-wins check). */
+export async function hasDeletionTombstone(id: string, kind: DeletionKind): Promise<boolean> {
+  const rec = await tx<DeletionTombstone | undefined>(DELETIONS_STORE, 'readonly', (s) =>
+    s.get([id, kind]),
+  );
+  return !!rec;
 }

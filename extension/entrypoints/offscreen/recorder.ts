@@ -7,12 +7,13 @@
 // background sync queue drains those chunks from the same shared IndexedDB. We notify it
 // after each persist (live drain) and on stop (finalize once fully synced).
 
-import { putChunk, setSessionMeta, requestPersistentStorage, checkStorageQuota, touchSession } from '../../lib/durableStore';
+import { putChunk, setSessionMeta, requestPersistentStorage, checkStorageQuota, touchSession, setSessionPaused } from '../../lib/durableStore';
 
 const TARGET_SAMPLE_RATE = 24000; // OpenAI Realtime API requires 24 kHz mono PCM16
 const CHUNK_TIMESLICE_MS = 3000;  // 3-second slices balance request count vs latency
 const QUOTA_WARN_RATIO = 0.9;     // warn the clinician before IndexedDB fills mid-session
 const QUOTA_CHECK_EVERY = 10;     // re-check storage pressure every N chunks (~30 s)
+const HEARTBEAT_INTERVAL_MS = 5000; // stamp updatedAt every 5s while recording or paused
 
 let mediaRecorder: MediaRecorder | null = null;
 let mimeType = 'audio/webm;codecs=opus';
@@ -21,6 +22,13 @@ let mimeType = 'audio/webm;codecs=opus';
 let currentSessionId: string | null = null;
 let chunkSeq = 0;
 let pendingPersists: Promise<void>[] = [];
+
+// Pause / discard state
+let isPaused = false;
+let discarding = false;
+
+// Heartbeat timer (runs while recording AND while paused; cleared on stop/discard)
+let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
 // Web Audio resources
 let audioContext: AudioContext | null = null;
@@ -38,6 +46,15 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       break;
     case 'STOP_RECORDING':
       stopRecording().then(() => sendResponse({ success: true }));
+      break;
+    case 'PAUSE_RECORDING':
+      pauseRecording().then(() => sendResponse({ success: true }));
+      break;
+    case 'RESUME_RECORDING':
+      resumeRecording().then(() => sendResponse({ success: true }));
+      break;
+    case 'DISCARD_RECORDING':
+      discardRecording().then(() => sendResponse({ success: true }));
       break;
     default:
       sendResponse({ success: false, error: 'Unknown command' });
@@ -61,6 +78,8 @@ async function startRecording() {
     currentSessionId = crypto.randomUUID();
     chunkSeq = 0;
     pendingPersists = [];
+    isPaused = false;
+    discarding = false;
 
     // Best-effort: keep the encrypted container from being evicted under pressure.
     void requestPersistentStorage();
@@ -75,41 +94,42 @@ async function startRecording() {
       updatedAt: Date.now(),
     });
 
+    // 5s heartbeat keeps the session alive in the eyes of the background recovery check.
+    // Runs through both active and paused states; cleared only on stop/discard.
+    const sid = currentSessionId;
+    heartbeatTimer = setInterval(() => void touchSession(sid), HEARTBEAT_INTERVAL_MS);
+
     mediaRecorder = new MediaRecorder(stream, { mimeType });
 
     mediaRecorder.ondataavailable = (e) => {
       if (e.data.size === 0 || !currentSessionId) return;
       const seq = chunkSeq++;
-      const sid = currentSessionId;
+      const chunkSid = currentSessionId;
 
-      // Encrypt + persist durably FIRST; uploading is the sync queue's job. A failure
-      // here just leaves the chunk pending — it is never dropped or held only in memory.
-      const persist = putChunk(sid, seq, e.data)
+      // Encrypt + persist durably FIRST; uploading is the sync queue's job.
+      const persist = putChunk(chunkSid, seq, e.data)
         .then(() => {
-          // Wake the background sync queue to drain while online (best-effort).
-          chrome.runtime.sendMessage({ type: 'CHUNK_PERSISTED', sessionId: sid }).catch(() => {});
+          chrome.runtime.sendMessage({ type: 'CHUNK_PERSISTED', sessionId: chunkSid }).catch(() => {});
         })
         .catch(() => {});
       pendingPersists.push(persist);
 
-      // Heartbeat on every chunk so the background can distinguish an actively-recording
-      // session (fresh updatedAt) from an abandoned one within a few seconds.
-      void touchSession(sid);
-      // Re-check storage pressure less frequently.
       if (seq % QUOTA_CHECK_EVERY === 0) void maybeWarnStorage();
     };
 
     mediaRecorder.onstop = async () => {
-      // Ensure every produced chunk is durably written before we ask to finalize.
+      clearHeartbeat();
+      // Ensure every produced chunk is durably written before finalizing.
       await Promise.allSettled(pendingPersists);
 
-      if (currentSessionId) {
+      if (!discarding && currentSessionId) {
         const port = chrome.runtime.connect({ name: 'saip-audio' });
         port.postMessage({ sessionId: currentSessionId, mimeType });
       }
 
       stream.getTracks().forEach((t) => t.stop());
       cleanupPcmCapture();
+      discarding = false;
     };
 
     // Raise timeslice to reduce request count while keeping memory bounded
@@ -124,6 +144,63 @@ async function startRecording() {
       type: 'ERROR',
       error: `Microphone access denied: ${err}`,
     });
+  }
+}
+
+// ─── Pause recording (break — excluded from audio and note) ──────────────────
+async function pauseRecording() {
+  if (!mediaRecorder || mediaRecorder.state !== 'recording') return;
+  isPaused = true;
+  mediaRecorder.pause();
+  if (currentSessionId) await setSessionPaused(currentSessionId, true);
+  chrome.runtime.sendMessage({ type: 'RECORDING_PAUSED' });
+}
+
+// ─── Resume recording after a break ──────────────────────────────────────────
+async function resumeRecording() {
+  if (!mediaRecorder || mediaRecorder.state !== 'paused') return;
+  isPaused = false;
+  mediaRecorder.resume();
+  if (currentSessionId) await setSessionPaused(currentSessionId, false);
+  chrome.runtime.sendMessage({ type: 'RECORDING_RESUMED' });
+}
+
+// ─── Discard: stop + release mic WITHOUT handing off to finalize ──────────────
+// Used by the Record-screen Discard button. The caller (background.ts) has already
+// written a deletion tombstone, so we just quiesce the recorder and release the mic.
+async function discardRecording() {
+  if (!mediaRecorder) return;
+  clearHeartbeat();
+  discarding = true;
+  // If paused, resume so MediaRecorder can flush and then stop cleanly.
+  if (mediaRecorder.state === 'paused') mediaRecorder.resume();
+  if (mediaRecorder.state === 'recording' || mediaRecorder.state === 'paused') {
+    mediaRecorder.stop(); // onstop fires → sees discarding=true → skips saip-audio
+  } else {
+    discarding = false;
+  }
+  streamPort?.postMessage({ type: 'STREAM_STOP' });
+}
+
+// ─── Stop recording ────────────────────────────────────────────────────────────
+async function stopRecording() {
+  if (!mediaRecorder) return;
+  streamPort?.postMessage({ type: 'STREAM_STOP' });
+  // If paused, resume first so the recorder can flush its remaining buffer.
+  if (mediaRecorder.state === 'paused') {
+    isPaused = false;
+    mediaRecorder.resume();
+  }
+  if (mediaRecorder.state === 'recording') {
+    mediaRecorder.stop();
+    chrome.runtime.sendMessage({ type: 'RECORDING_STOPPED' });
+  }
+}
+
+function clearHeartbeat() {
+  if (heartbeatTimer !== null) {
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
   }
 }
 
@@ -168,6 +245,8 @@ function startScriptProcessorFallback() {
 }
 
 function sendPcmFrame(buffer: ArrayBuffer) {
+  // Do not stream PCM while paused — the break must not appear in live captions.
+  if (isPaused) return;
   const b64 = arrayBufferToBase64(buffer);
   streamPort?.postMessage({ type: 'STREAM_PCM_FRAME', frame: b64 });
 }
@@ -181,19 +260,8 @@ function cleanupPcmCapture() {
   audioContext = null;
 }
 
-// ─── Stop recording ────────────────────────────────────────────────────────────
-async function stopRecording() {
-  if (mediaRecorder?.state === 'recording') {
-    streamPort?.postMessage({ type: 'STREAM_STOP' });
-    mediaRecorder.stop();
-    chrome.runtime.sendMessage({ type: 'RECORDING_STOPPED' });
-  }
-}
-
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-// Broadcast a non-blocking warning when the origin's storage is nearly full, so the
-// clinician can finish + sync the session before a write fails. Never throws.
 async function maybeWarnStorage() {
   const q = await checkStorageQuota();
   if (!q || q.ratio < QUOTA_WARN_RATIO) return;
