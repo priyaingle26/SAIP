@@ -1017,6 +1017,22 @@ export default function MobileApp() {
                   setNotesByLanguage({}); setSelectedLanguage("en");
                   setIsEditingNote(false);
                   setActiveTab("note");
+                  // Fetch the full encounter for per-language note variants (the list omits them),
+                  // so the language dropdown appears for multilingual encounters.
+                  void fetch(getApiUrl(`/ext-encounters/${enc.id}`), { headers: { Authorization: `Bearer ${token}` } })
+                    .then((r) => (r.ok ? r.json() : null))
+                    .then((d) => {
+                      if (!d) return;
+                      const map: Record<string, string> = d.notesByLanguage ?? {};
+                      const primary = map["en"] ? "en" : Object.keys(map)[0];
+                      if (primary && map[primary]) {
+                        setNotesByLanguage(map);
+                        setSelectedLanguage(primary);
+                        setGeneratedNote({ raw: map[primary] });
+                        setEditedNoteContent(map[primary]);
+                      }
+                    })
+                    .catch(() => {});
                 }}
                   style={{
                     background: T.surface,
