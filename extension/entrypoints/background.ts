@@ -11,6 +11,7 @@ import {
   deleteSession,
   addDeletionTombstone,
   clearDeletionTombstone,
+  hasDeletionTombstone,
   type SessionMeta,
 } from '../lib/durableStore';
 import type { ExtensionMessage, Encounter, StreamFinalizedPayload } from '../lib/schemas';
@@ -271,10 +272,11 @@ async function openRealtimeWs() {
         
         let safeText = event.text;
         if (safeText) {
-          // Keep letters/numbers in ANY script (incl. Devanagari/Hindi, etc.), whitespace and
-          // basic punctuation. The Unicode property escapes (\p{L}\p{N}) with the /u flag preserve
-          // non-Latin scripts that the old Latin-only filter stripped (which showed Hindi as "?").
-          safeText = safeText.replace(/[^\p{L}\p{N}\s.,!?'"()\-:;“”‘’]/gu, '');
+          // Keep letters/marks/numbers in ANY script (incl. Devanagari/Hindi, etc.), whitespace,
+          // basic punctuation, and clinical notation symbols (/, %, <, >, =, +, @, degree, plus-minus)
+          // so vitals like “BP 120/80, O2 sat 98%, A1c > 7” render intact on screen. \p{M} keeps
+          // combining marks (Devanagari virama/vowel signs) so Hindi words are not mangled.
+          safeText = safeText.replace(/[^\p{L}\p{M}\p{N}\s.,!?'"()\-:;“”‘’/<>=%+@°±]/gu, '');
         }
 
         if (event.type === 'delta' && safeText) {
@@ -463,8 +465,9 @@ async function handleDeleteSession(payload: { kind: 'session' | 'encounter'; id:
 // retry on the next drain (e.g. transient network failure / still offline).
 
 async function finalizeSession(meta: SessionMeta): Promise<boolean> {
-  // Delete-wins: if the session was deleted while finalize was in flight, drop it.
-  if (deletedSessionIds.has(meta.sessionId)) return true; // treat as done so the queue removes it
+  // Delete-wins: fast in-memory path, then durable tombstone (survives SW eviction).
+  if (deletedSessionIds.has(meta.sessionId)) return true;
+  if (await hasDeletionTombstone(meta.sessionId, 'session')) return true;
   try {
     const result = await finalizeStream(
       meta.sessionId,

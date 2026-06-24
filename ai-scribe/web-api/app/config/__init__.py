@@ -89,6 +89,11 @@ class Settings(BaseSettings):
     # splitting turns on natural mid-sentence micro-pauses. 300 ms balances both;
     # raise toward 500 for cleaner segments, lower toward 200 for snappier updates.
     REALTIME_VAD_SILENCE_MS: int = 300
+    # Server-VAD speech-detection threshold (0.0–1.0). OpenAI's default is 0.5, which
+    # captures soft patient speech across a desk. Raise toward 0.8 for noisy rooms.
+    REALTIME_VAD_THRESHOLD: float = 0.5
+    # Maximum seconds to wait for all per-language note generations to complete.
+    NOTE_GENERATION_TIMEOUT_S: float = 120
     # Upstream session rotation: how many seconds before proactively opening a new
     # OpenAI WS connection to stay under the provider's ~30-min session limit.
     # Set to 0 to disable rotation (legacy single-connection mode).

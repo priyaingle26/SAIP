@@ -32,7 +32,20 @@ self.addEventListener('message', (event) => {
 
 function openDb() {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME);
+    const req = indexedDB.open(DB_NAME, 1);
+    req.onupgradeneeded = (event) => {
+      const db = event.target.result;
+      if (!db.objectStoreNames.contains('chunks')) {
+        const chunks = db.createObjectStore('chunks', { keyPath: ['sessionId', 'seq'] });
+        chunks.createIndex('by_session', 'sessionId', { unique: false });
+      }
+      if (!db.objectStoreNames.contains('meta')) {
+        db.createObjectStore('meta', { keyPath: 'key' });
+      }
+      if (!db.objectStoreNames.contains('deletions')) {
+        db.createObjectStore('deletions', { keyPath: ['id', 'kind'] });
+      }
+    };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
   });

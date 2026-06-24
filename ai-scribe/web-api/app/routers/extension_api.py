@@ -684,7 +684,7 @@ async def transcribe_stream_ws(
         else:
             turn_detection = {
                 "type": "server_vad",
-                "threshold": 0.8,
+                "threshold": settings.REALTIME_VAD_THRESHOLD,
                 "prefix_padding_ms": 300,
                 "silence_duration_ms": settings.REALTIME_VAD_SILENCE_MS,
             }
@@ -1094,30 +1094,46 @@ async def extension_generate(
     except Exception as e:
         logger.warning(f"Failed to fetch NoteDefinition: {e}")
 
-    # Detect the languages spoken; generate the note in English + each detected language.
-    languages = _detect_languages(request.transcript)
-    # English is the primary variant (note.raw); ensure it is generated first.
-    ordered = [l for l in languages if l["code"] == "en"] + [l for l in languages if l["code"] != "en"]
-
     footer = f"\n\n*Generated in part by SAIP, with patient consent where applicable.*\n*Note ID: ext-{request.encounter_id}*"
-    notes_by_lang: dict[str, str] = {}
-    for lang in ordered:
-        lang_instructions = instructions
-        if lang["code"] != "en":
-            lang_instructions = (
+
+    async def _generate_all() -> tuple[dict[str, str], list[dict]]:
+        # ASCII-only transcripts are always English — skip the detection round-trip.
+        if all(ord(c) < 128 for c in request.transcript):
+            langs = [{"name": "English", "code": "en"}]
+        else:
+            langs = await asyncio.to_thread(_detect_languages, request.transcript)
+        ord_langs = [l for l in langs if l["code"] == "en"] + [l for l in langs if l["code"] != "en"]
+
+        def _make_instr(lang: dict) -> str:
+            if lang["code"] == "en":
+                return instructions
+            return (
                 f"{instructions}\n\n"
                 f"IMPORTANT: Write the ENTIRE note in {lang['name']} ({lang['code']}). "
                 f"Translate all section headers and content into {lang['name']}. "
                 f"Keep clinical drug names and standardized codes as-is."
             )
-        out = generate_note(
-            model=settings.DEFAULT_NOTE_GENERATION_MODEL,
-            instructions=lang_instructions,
-            context=None,
-            transcript=request.transcript,
-            output_type="Markdown",
+
+        async def _gen_one(lang: dict) -> tuple[str, str]:
+            out = await asyncio.to_thread(
+                generate_note,
+                settings.DEFAULT_NOTE_GENERATION_MODEL,
+                _make_instr(lang),
+                None,
+                request.transcript,
+                "Markdown",
+            )
+            return lang["code"], out.text + footer
+
+        pairs = await asyncio.gather(*[_gen_one(l) for l in ord_langs])
+        return dict(pairs), ord_langs
+
+    try:
+        notes_by_lang, ordered = await asyncio.wait_for(
+            _generate_all(), timeout=settings.NOTE_GENERATION_TIMEOUT_S
         )
-        notes_by_lang[lang["code"]] = out.text + footer
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="Note generation timed out; please retry.")
 
     # Primary text (English if present, else the first generated variant).
     primary_code = "en" if "en" in notes_by_lang else ordered[0]["code"]

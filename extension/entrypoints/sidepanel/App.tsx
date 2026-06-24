@@ -325,8 +325,8 @@ export default function App() {
         }
 
         case 'TRANSCRIBE_COMPLETE': {
-          const p = message.payload as { encounterId: string; transcript: string };
-          setCurrentEncounterId(p.encounterId);
+          const p = message.payload as { encounterId?: string; transcript: string };
+          if (p.encounterId) setCurrentEncounterId(p.encounterId);
           setTranscript(p.transcript);
           setProcessingStep('Generating clinical note…');
           break;
