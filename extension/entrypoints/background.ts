@@ -2,11 +2,31 @@
 import { transcribeAudio, generateNote, fetchEncounters, finalizeStream, checkStreamingStatus, getStreamTicket } from '../lib/apiClient';
 import { verifyToken, getAuthToken } from '../lib/auth';
 import { STORAGE_KEYS, SAIP_ENDPOINTS } from '../lib/constants';
-import { drainAll, setFinalizeHandler } from '../lib/syncQueue';
-import { setSessionMeta, getSessionMeta, type SessionMeta } from '../lib/durableStore';
+import { drainAll, setFinalizeHandler, setStatusReporter } from '../lib/syncQueue';
+import {
+  setSessionMeta,
+  getSessionMeta,
+  getSyncSummary,
+  listActiveSessions,
+  type SessionMeta,
+} from '../lib/durableStore';
 import type { ExtensionMessage, Encounter, StreamFinalizedPayload } from '../lib/schemas';
 
 const DRAIN_ALARM = 'saip-drain';
+// A `recording` session whose last chunk arrived this long ago was abandoned (browser
+// closed mid-capture). Keyed on IDLE time, not session age, so a long but still-active
+// recording — which keeps refreshing updatedAt — is never prematurely finalized.
+const STALE_RECORDING_IDLE_MS = 30 * 60 * 1000; // 30 min with no new chunk
+
+// Push the current pending-upload picture to the sidepanel (best-effort; no-op if closed).
+function broadcastSyncStatus(summary: { pendingChunks: number; activeSessions: number }, syncing: boolean) {
+  chrome.runtime
+    .sendMessage({
+      type: 'SYNC_STATUS',
+      payload: { ...summary, syncing, online: navigator.onLine },
+    })
+    .catch(() => {});
+}
 
 export default defineBackground(() => {
   // Open Side Panel when the action icon is clicked
@@ -55,17 +75,30 @@ export default defineBackground(() => {
 
   // ── Resumable sync wiring ───────────────────────────────────────────────────
   setFinalizeHandler(finalizeSession);
+  // Mirror the drain queue's progress to the sidepanel as it changes.
+  setStatusReporter(broadcastSyncStatus);
   // Periodic heartbeat re-wakes an evicted worker to drain any backlog (min 30s).
   chrome.alarms.create(DRAIN_ALARM, { periodInMinutes: 0.5 });
   chrome.alarms.onAlarm.addListener((alarm) => {
-    if (alarm.name === DRAIN_ALARM) void drainAll();
+    if (alarm.name === DRAIN_ALARM) {
+      void recoverStaleRecordingSessions().finally(() => void drainAll());
+    }
   });
   // Drain immediately when connectivity returns or a new chunk is persisted.
   self.addEventListener('online', () => void drainAll());
+  // Flip the banner to "offline" the moment connectivity drops.
+  self.addEventListener('offline', () => {
+    void getSyncSummary().then((s) => broadcastSyncStatus(s, false));
+  });
   chrome.runtime.onMessage.addListener((message: { type?: string }) => {
     if (message?.type === 'CHUNK_PERSISTED') void drainAll();
+    // A freshly opened sidepanel asks for the current state (no need to wait for the alarm).
+    if (message?.type === 'GET_SYNC_STATUS') {
+      void getSyncSummary().then((s) => broadcastSyncStatus(s, false));
+    }
   });
-  void drainAll(); // resume any backlog left from a previous worker lifetime
+  // Recover any session stranded mid-recording by a crash, then resume the backlog.
+  void recoverStaleRecordingSessions().finally(() => void drainAll());
 
   // ── Standard message router ────────────────────────────────────────────────
   chrome.runtime.onMessage.addListener(
@@ -284,6 +317,27 @@ async function processAudio(audioBase64: string, mimeType: string, encounterId?:
 // Captures the streamed transcript if one was produced online; otherwise flags the
 // session for server-side re-transcription (offline/batch). The actual finalize runs
 // from the sync queue once every chunk has been uploaded.
+
+// ─── Recover sessions stranded mid-recording ─────────────────────────────────
+// If the browser/offscreen died while recording, the session never transitions out
+// of `recording`, so the sync queue (which only finalizes `pending-finalize`) leaves
+// its chunks and IndexedDB entry forever. On startup, promote any such session that
+// is clearly abandoned to finalize via server re-transcription.
+
+async function recoverStaleRecordingSessions() {
+  const now = Date.now();
+  const sessions = await listActiveSessions();
+  for (const meta of sessions) {
+    if (meta.status !== 'recording') continue;
+    const lastActivity = meta.updatedAt ?? meta.createdAt;
+    if (now - lastActivity < STALE_RECORDING_IDLE_MS) continue; // still active — leave it
+    await setSessionMeta({
+      ...meta,
+      retranscribe: true, // no streamed transcript survived — re-transcribe the audio
+      status: 'pending-finalize',
+    });
+  }
+}
 
 async function markSessionPendingFinalize(sessionId: string, mimeType: string) {
   const transcript = streamingTranscript ?? '';

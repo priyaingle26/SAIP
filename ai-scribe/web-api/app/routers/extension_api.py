@@ -58,6 +58,50 @@ def _cleanup_chunks(session_id: str) -> None:
         shutil.rmtree(d, ignore_errors=True)
 
 
+def _sweep_stale_chunks(max_age_s: float) -> int:
+    """Remove chunk dirs whose newest chunk is older than ``max_age_s``.
+
+    A session that uploads offline-captured chunks but is never finalized (the
+    clinician closed the laptop for good) would otherwise leak its directory under
+    ``.data/recordings/chunks/`` forever. We key idleness on the newest ``*.bin``
+    mtime so a session that is still actively uploading is never swept mid-flight.
+    Returns the number of directories removed.
+    """
+    base = pathlib.Path(settings.RECORDINGS_FOLDER) / "chunks"
+    if not base.exists():
+        return 0
+    now = time.time()
+    removed = 0
+    for d in base.iterdir():
+        if not d.is_dir():
+            continue
+        try:
+            mtimes = [f.stat().st_mtime for f in d.glob("*.bin")]
+            last_activity = max(mtimes) if mtimes else d.stat().st_mtime
+            if now - last_activity > max_age_s:
+                shutil.rmtree(d, ignore_errors=True)
+                removed += 1
+        except OSError:
+            continue
+    return removed
+
+
+async def start_chunk_sweeper() -> None:
+    """Background loop: periodically sweep abandoned chunk dirs. Runs until cancelled."""
+    interval_s = settings.CHUNK_SWEEP_INTERVAL_MINUTES * 60
+    ttl_s = settings.CHUNK_TTL_HOURS * 3600
+    while True:
+        try:
+            await asyncio.sleep(interval_s)
+            removed = await asyncio.to_thread(_sweep_stale_chunks, ttl_s)
+            if removed:
+                logger.info("Chunk sweeper removed %d stale session dir(s)", removed)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Chunk sweeper iteration failed")
+
+
 # =============================================================================
 # SHORT-LIVED STREAM TICKETS — replace long-lived token in WS URL
 # =============================================================================

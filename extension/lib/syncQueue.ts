@@ -14,7 +14,9 @@ import {
   markUploaded,
   countPending,
   deleteSession,
+  getSyncSummary,
   type SessionMeta,
+  type SyncSummary,
 } from './durableStore';
 import { uploadChunk, getSessionReceivedSeqs } from './apiClient';
 
@@ -22,12 +24,30 @@ import { uploadChunk, getSessionReceivedSeqs } from './apiClient';
 // Returns true on success (durable session is then deleted), false to retry later.
 export type FinalizeHandler = (meta: SessionMeta) => Promise<boolean>;
 
+// Notified whenever the pending-upload picture changes, so the UI can reflect it.
+export type StatusReporter = (summary: SyncSummary, syncing: boolean) => void;
+
 let finalizeHandler: FinalizeHandler | null = null;
+let statusReporter: StatusReporter | null = null;
 let draining = false;
 let rerun = false;
 
 export function setFinalizeHandler(handler: FinalizeHandler): void {
   finalizeHandler = handler;
+}
+
+export function setStatusReporter(reporter: StatusReporter): void {
+  statusReporter = reporter;
+}
+
+/** Best-effort status push; never throws into the drain loop. */
+async function reportStatus(syncing: boolean): Promise<void> {
+  if (!statusReporter) return;
+  try {
+    statusReporter(await getSyncSummary(), syncing);
+  } catch {
+    /* ignore */
+  }
 }
 
 const MAX_ATTEMPTS = 5;
@@ -73,12 +93,14 @@ export async function drainAll(): Promise<void> {
     return;
   }
   draining = true;
+  await reportStatus(true);
   try {
     do {
       rerun = false;
       const sessions = await listActiveSessions();
       for (const meta of sessions) {
         const fullyUploaded = await drainSession(meta);
+        await reportStatus(true);
         if (!fullyUploaded) continue;
         if (meta.status === 'pending-finalize' && finalizeHandler) {
           const done = await finalizeHandler(meta);
@@ -88,5 +110,6 @@ export async function drainAll(): Promise<void> {
     } while (rerun);
   } finally {
     draining = false;
+    await reportStatus(false);
   }
 }

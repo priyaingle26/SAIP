@@ -49,6 +49,11 @@ class Settings(BaseSettings):
     RECORDINGS_FOLDER: str = f"{DATA_FOLDER}/recordings"
     DEV_DATABASE_FILE: str = f"{DATA_FOLDER}/database.db"
 
+    # Abandoned chunked-upload sessions (offline durable capture) are swept from disk
+    # after this idle age; the sweeper runs on this interval.
+    CHUNK_TTL_HOURS: float = 24.0
+    CHUNK_SWEEP_INTERVAL_MINUTES: float = 60.0
+
     PROMPTS_FOLDER: str = ".prompts"
     BUILTIN_NOTETYPES_FOLDER: str = f"{PROMPTS_FOLDER}/builtin-note-types"
 

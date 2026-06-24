@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 import json
 import os
 import traceback
@@ -85,10 +86,19 @@ async def lifespan(_: FastAPI):
         # Always update built-in note types in production too
         db.update_builtin_notetypes()
 
+    # Periodically sweep abandoned offline-capture chunk dirs so disk doesn't leak.
+    from app.routers.extension_api import start_chunk_sweeper
+    sweeper_task = asyncio.create_task(start_chunk_sweeper())
+
     # Run the app.
     yield
 
-    # Shutdown: Dispose of the sql alchemy engine.
+    # Shutdown: stop the sweeper, then dispose of the sql alchemy engine.
+    sweeper_task.cancel()
+    try:
+        await sweeper_task
+    except asyncio.CancelledError:
+        pass
     db.engine.dispose()
 
 

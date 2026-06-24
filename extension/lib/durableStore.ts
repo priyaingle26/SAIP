@@ -28,6 +28,10 @@ export interface SessionMeta {
   retranscribe?: boolean;
   status: SessionStatus;
   createdAt: number;
+  /** Last time the recorder wrote a chunk for this session. Drives idle-based orphan
+   *  recovery: an actively-recording session keeps this fresh, so it is never treated
+   *  as abandoned regardless of how long the recording runs. */
+  updatedAt?: number;
 }
 
 interface ChunkRecord {
@@ -192,6 +196,41 @@ export async function markUploaded(sessionId: string, seq: number): Promise<void
   await tx(CHUNKS_STORE, 'readwrite', (s) => s.put(rec));
 }
 
+// ─── Sync + quota summaries (read-only, for UI) ──────────────────────────────
+
+export interface SyncSummary {
+  /** Total not-yet-uploaded chunks across all active sessions. */
+  pendingChunks: number;
+  /** Sessions not yet finalized (recording or pending-finalize). */
+  activeSessions: number;
+}
+
+/** Aggregate pending-upload state across active sessions, for the sidepanel banner. */
+export async function getSyncSummary(): Promise<SyncSummary> {
+  const sessions = await listActiveSessions();
+  let pendingChunks = 0;
+  for (const s of sessions) pendingChunks += await countPending(s.sessionId);
+  return { pendingChunks, activeSessions: sessions.length };
+}
+
+export interface QuotaInfo {
+  usage: number; // bytes used by this origin
+  quota: number; // bytes available to this origin
+  ratio: number; // usage / quota, 0..1
+}
+
+/** Best-effort storage pressure check. Returns null if the API is unavailable. */
+export async function checkStorageQuota(): Promise<QuotaInfo | null> {
+  try {
+    if (!navigator.storage?.estimate) return null;
+    const { usage = 0, quota = 0 } = await navigator.storage.estimate();
+    if (!quota) return null;
+    return { usage, quota, ratio: usage / quota };
+  } catch {
+    return null;
+  }
+}
+
 // ─── Session metadata ────────────────────────────────────────────────────────
 
 function metaKey(sessionId: string): string {
@@ -200,6 +239,13 @@ function metaKey(sessionId: string): string {
 
 export async function setSessionMeta(meta: SessionMeta): Promise<void> {
   await tx(META_STORE, 'readwrite', (s) => s.put({ key: metaKey(meta.sessionId), meta }));
+}
+
+/** Mark a session as still active (updates updatedAt). No-op if the session is gone. */
+export async function touchSession(sessionId: string): Promise<void> {
+  const meta = await getSessionMeta(sessionId);
+  if (!meta) return;
+  await setSessionMeta({ ...meta, updatedAt: Date.now() });
 }
 
 export async function getSessionMeta(sessionId: string): Promise<SessionMeta | null> {

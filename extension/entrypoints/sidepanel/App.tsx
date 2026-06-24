@@ -59,6 +59,65 @@ function LogoMark({ size = 26 }: { size?: number }) {
   );
 }
 
+// ─── Durable-capture sync / storage banner ───────────────────────────────────
+// Surfaces offline-captured backlog and low-storage warnings so a session is never
+// silently lost. Renders nothing when online with no pending chunks.
+function SyncBanner({
+  status,
+  storageWarning,
+}: {
+  status: { pendingChunks: number; activeSessions: number; syncing: boolean; online: boolean } | null;
+  storageWarning: { usageMB: number; quotaMB: number } | null;
+}) {
+  const pending = status?.pendingChunks ?? 0;
+  const n = (c: number) => `${c} chunk${c === 1 ? '' : 's'}`;
+
+  let sync: { text: string; bg: string; border: string; fg: string; dot: boolean } | null = null;
+  if (status && !status.online && pending > 0) {
+    sync = {
+      text: `Offline — ${n(pending)} saved, will sync when reconnected`,
+      bg: 'var(--color-warning-bg, #fef3c7)', border: 'var(--color-warning-border, #fcd34d)',
+      fg: 'var(--color-warning, #b45309)', dot: true,
+    };
+  } else if (status && pending > 0) {
+    sync = {
+      text: `Syncing ${n(pending)}…`,
+      bg: 'var(--color-primary-subtle)', border: 'var(--color-primary-subtle-border)',
+      fg: 'var(--color-primary)', dot: true,
+    };
+  }
+
+  if (!sync && !storageWarning) return null;
+
+  const row = (bg: string, border: string, fg: string, content: React.ReactNode) => (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 'var(--space-2)',
+      padding: 'var(--space-1) var(--space-3)',
+      background: bg, borderBottom: `1px solid ${border}`,
+      fontSize: 'var(--text-xs)', fontWeight: 600, color: fg,
+    }}>
+      {content}
+    </div>
+  );
+
+  return (
+    <>
+      {storageWarning && row(
+        'var(--color-destructive-bg)', 'var(--color-destructive-border)', 'var(--color-destructive)',
+        <span>Low device storage ({storageWarning.usageMB} MB used) — finish &amp; sync this session soon.</span>
+      )}
+      {sync && row(sync.bg, sync.border, sync.fg, (
+        <>
+          {sync.dot && (
+            <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'currentColor', animation: status?.syncing ? 'saip-pulse-ring-rec 1s ease-in-out infinite' : 'none', flexShrink: 0 }} />
+          )}
+          <span>{sync.text}</span>
+        </>
+      ))}
+    </>
+  );
+}
+
 // ─── Labeled transcript display ───────────────────────────────────────────────
 function LabeledTranscriptView({
   turns,
@@ -158,11 +217,17 @@ export default function App() {
   const [showLabeledTranscript, setShowLabeledTranscript] = useState(false);
   const captionEndRef = useRef<HTMLDivElement>(null);
 
+  // ── Durable-capture sync state ──────────────────────────────────────────────
+  const [syncStatus, setSyncStatus] = useState<{ pendingChunks: number; activeSessions: number; syncing: boolean; online: boolean } | null>(null);
+  const [storageWarning, setStorageWarning] = useState<{ usageMB: number; quotaMB: number } | null>(null);
+
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     getStoredUser().then(setUser);
     loadEncounters();
+    // Ask the background worker for the current sync picture (offline backlog, etc.).
+    chrome.runtime.sendMessage({ type: 'GET_SYNC_STATUS' }).catch(() => {});
     // Restore the previously selected patient (persisted across SW restarts)
     chrome.storage.local.get('saip_selected_patient_id').then(async (r) => {
       const pid = r['saip_selected_patient_id'] as string | null | undefined;
@@ -241,6 +306,20 @@ export default function App() {
           setProcessingStep('');
           setActiveTab('note');
           loadEncounters();
+          break;
+        }
+
+        case 'SYNC_STATUS': {
+          const p = message.payload as { pendingChunks: number; activeSessions: number; syncing: boolean; online: boolean };
+          setSyncStatus(p);
+          // Backlog drained while online → the device-storage warning is no longer relevant.
+          if (p.pendingChunks === 0) setStorageWarning(null);
+          break;
+        }
+
+        case 'STORAGE_WARNING': {
+          const p = message.payload as { usageMB: number; quotaMB: number; ratio: number };
+          setStorageWarning({ usageMB: p.usageMB, quotaMB: p.quotaMB });
           break;
         }
 
@@ -546,6 +625,9 @@ export default function App() {
         active={activeTab}
         onChange={(id) => setActiveTab(id as Tab)}
       />
+
+      {/* ── Durable-capture sync / storage banners (visible on every tab) ── */}
+      <SyncBanner status={syncStatus} storageWarning={storageWarning} />
 
       {/* ── Content ── */}
       <main

@@ -65,6 +65,10 @@ export type MessageType =
   | 'AUTH_FAILURE'
   | 'ERROR'
   | 'SET_PATIENT'
+  // Durable-capture sync status
+  | 'SYNC_STATUS'
+  | 'GET_SYNC_STATUS'
+  | 'STORAGE_WARNING'
   // Live streaming
   | 'STREAM_START'
   | 'STREAM_DELTA'

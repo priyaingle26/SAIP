@@ -7,10 +7,12 @@
 // background sync queue drains those chunks from the same shared IndexedDB. We notify it
 // after each persist (live drain) and on stop (finalize once fully synced).
 
-import { putChunk, setSessionMeta, requestPersistentStorage } from '../../lib/durableStore';
+import { putChunk, setSessionMeta, requestPersistentStorage, checkStorageQuota, touchSession } from '../../lib/durableStore';
 
 const TARGET_SAMPLE_RATE = 24000; // OpenAI Realtime API requires 24 kHz mono PCM16
 const CHUNK_TIMESLICE_MS = 3000;  // 3-second slices balance request count vs latency
+const QUOTA_WARN_RATIO = 0.9;     // warn the clinician before IndexedDB fills mid-session
+const QUOTA_CHECK_EVERY = 10;     // re-check storage pressure every N chunks (~30 s)
 
 let mediaRecorder: MediaRecorder | null = null;
 let mimeType = 'audio/webm;codecs=opus';
@@ -62,12 +64,15 @@ async function startRecording() {
 
     // Best-effort: keep the encrypted container from being evicted under pressure.
     void requestPersistentStorage();
+    // Warn early if the device is already low on storage before we start writing chunks.
+    void maybeWarnStorage();
     // Record the session so the sync queue can drain + finalize it even across evictions.
     await setSessionMeta({
       sessionId: currentSessionId,
       mimeType,
       status: 'recording',
       createdAt: Date.now(),
+      updatedAt: Date.now(),
     });
 
     mediaRecorder = new MediaRecorder(stream, { mimeType });
@@ -86,6 +91,13 @@ async function startRecording() {
         })
         .catch(() => {});
       pendingPersists.push(persist);
+
+      // Periodically re-check storage pressure and refresh the session's activity
+      // timestamp, so a long but active recording is never seen as abandoned.
+      if (seq % QUOTA_CHECK_EVERY === 0) {
+        void maybeWarnStorage();
+        void touchSession(sid);
+      }
     };
 
     mediaRecorder.onstop = async () => {
@@ -180,6 +192,23 @@ async function stopRecording() {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+// Broadcast a non-blocking warning when the origin's storage is nearly full, so the
+// clinician can finish + sync the session before a write fails. Never throws.
+async function maybeWarnStorage() {
+  const q = await checkStorageQuota();
+  if (!q || q.ratio < QUOTA_WARN_RATIO) return;
+  chrome.runtime
+    .sendMessage({
+      type: 'STORAGE_WARNING',
+      payload: {
+        usageMB: Math.round(q.usage / 1_048_576),
+        quotaMB: Math.round(q.quota / 1_048_576),
+        ratio: q.ratio,
+      },
+    })
+    .catch(() => {});
+}
 
 function floatToPcm16(float32: Float32Array): Int16Array {
   const out = new Int16Array(float32.length);
