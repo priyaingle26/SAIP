@@ -803,10 +803,19 @@ export default function App() {
                 </Button>
               )}
               {isProcessing && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', color: 'var(--color-muted)', fontSize: 'var(--text-sm)' }}>
-                  <Spinner size={15} />
-                  <span>{processingStep}</span>
-                </div>
+                syncStatus && !syncStatus.online && syncStatus.pendingChunks > 0 ? (
+                  // Stopped while offline: capture is safely saved; finalize is parked
+                  // until reconnect. Show the real state instead of a busy spinner.
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', color: 'var(--color-warning, #b45309)', fontSize: 'var(--text-sm)' }}>
+                    <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'currentColor', flexShrink: 0 }} />
+                    <span>Saved offline — will transcribe &amp; generate the note automatically when you reconnect.</span>
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', color: 'var(--color-muted)', fontSize: 'var(--text-sm)' }}>
+                    <Spinner size={15} />
+                    <span>{processingStep}</span>
+                  </div>
+                )
               )}
             </div>
 
