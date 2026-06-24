@@ -1,6 +1,36 @@
 "use client";
 
 import React, { useState, useEffect, useRef, useCallback } from "react";
+import { MobileRecorder } from "./lib/recorder";
+import {
+  setFinalizeHandler, setStatusReporter, drainAll,
+} from "./lib/syncQueue";
+import {
+  setRuntimeConfig, addDeletionTombstone, clearDeletionTombstone, deleteSession,
+  type SessionMeta, type SyncSummary, type TimerState,
+} from "./lib/durableStore";
+import {
+  finalizeSession as apiFinalize, generateNote as apiGenerate,
+  deleteServerSession, deleteEncounter,
+} from "./lib/apiClient";
+import {
+  registerServiceWorker, recoverStaleRecordingSessions, getActiveRecordingSession,
+} from "./lib/lifecycle";
+
+// Live elapsed = recordedMs + (now - lastResumedAt); freezes while paused. Survives reopen.
+function RecordingTimer({ paused, recordedMs, lastResumedAt }: { paused: boolean; recordedMs: number; lastResumedAt?: number }) {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (paused) return;
+    const id = setInterval(() => setTick((t) => t + 1), 250);
+    return () => clearInterval(id);
+  }, [paused, lastResumedAt]);
+  const activeMs = paused || !lastResumedAt ? recordedMs : recordedMs + (Date.now() - lastResumedAt);
+  const s = Math.max(0, Math.floor(activeMs / 1000));
+  const mm = String(Math.floor(s / 60)).padStart(2, "0");
+  const ss = String(s % 60).padStart(2, "0");
+  return <span style={{ fontVariantNumeric: "tabular-nums", fontWeight: 700, fontSize: 20, letterSpacing: 2 }}>{mm}:{ss}</span>;
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 type User = { id: string; email: string; name: string };
@@ -180,6 +210,14 @@ export default function MobileApp() {
   const [isEditingNote, setIsEditingNote] = useState(false);
   const [editedNoteContent, setEditedNoteContent] = useState("");
 
+  // ── Durable recording lifecycle state ────────────────────────────────────────
+  const [isPaused, setIsPaused] = useState(false);
+  const [timing, setTiming] = useState<TimerState>({ recordedMs: 0 });
+  const [syncStatus, setSyncStatus] = useState<{ pendingChunks: number; syncing: boolean } | null>(null);
+  const [storageWarning, setStorageWarning] = useState<{ usageMB: number; quotaMB: number } | null>(null);
+  const [isOnline, setIsOnline] = useState(true);
+  const recorderRef = useRef<MobileRecorder | null>(null);
+
   // ── Patient state ───────────────────────────────────────────────────────────
   const [selectedPatient, setSelectedPatient] = useState<Patient | null>(null);
   const [patientQuery, setPatientQuery] = useState("");
@@ -194,8 +232,6 @@ export default function MobileApp() {
   const [showPatientPicker, setShowPatientPicker] = useState(false);
   const [confirmingField, setConfirmingField] = useState<string | null>(null);
 
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioChunksRef = useRef<Blob[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // ── Inject fonts + keyframes ─────────────────────────────────────────────────
@@ -229,6 +265,67 @@ export default function MobileApp() {
       void fetchEncounters(storedToken);
     }
   }, []);
+
+  // ── Durable recording lifecycle: handlers, SW, recovery, restoration ──────────
+  useEffect(() => {
+    // Finalize a fully-uploaded session → re-transcribe + generate note → update UI.
+    setFinalizeHandler(async (meta: SessionMeta) => {
+      const fin = await apiFinalize(meta.sessionId, meta.transcript ?? "", meta.patientId, true);
+      if (!fin.ok || !fin.data) return false;
+      const gen = await apiGenerate(fin.data.encounterId, fin.data.transcript, meta.patientId);
+      setTranscript(fin.data.transcript);
+      if (gen.ok && gen.data) {
+        setGeneratedNote(gen.data.note);
+        setEditedNoteContent(gen.data.note.raw);
+        setActiveTab("note");
+      }
+      setIsProcessing(false);
+      setProcessingStep("");
+      void fetchEncounters(localStorage.getItem("saip_ext_token") ?? "");
+      return true;
+    });
+
+    // Mirror sync status into the banner.
+    setStatusReporter((summary: SyncSummary, syncing: boolean) => {
+      setSyncStatus({ pendingChunks: summary.pendingChunks, syncing });
+    });
+
+    // Online/offline → banner + drain on reconnect.
+    const setOnline = () => setIsOnline(true);
+    const setOffline = () => setIsOnline(false);
+    setIsOnline(typeof navigator !== "undefined" ? navigator.onLine : true);
+    window.addEventListener("online", () => { setOnline(); void drainAll(); });
+    window.addEventListener("offline", setOffline);
+
+    void registerServiceWorker();
+
+    // Recover an abandoned recording, restore an in-progress/paused one, then drain backlog.
+    void (async () => {
+      await recoverStaleRecordingSessions();
+      const active = await getActiveRecordingSession();
+      if (active) {
+        setIsRecording(true);
+        setIsPaused(active.paused ?? false);
+        setTiming({ recordedMs: active.recordedMs ?? 0, lastResumedAt: active.lastResumedAt });
+      }
+      void drainAll();
+    })();
+
+    return () => {
+      window.removeEventListener("online", setOnline);
+      window.removeEventListener("offline", setOffline);
+      recorderRef.current?.destroy();
+    };
+  }, []);
+
+  // Mirror auth token + backend URL into IndexedDB so the service worker can drain after close.
+  useEffect(() => {
+    if (!token) return;
+    void setRuntimeConfig({
+      token,
+      backendUrl: process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000",
+    });
+  }, [token]);
 
   // ── Auth ─────────────────────────────────────────────────────────────────────
   async function handleLogin(e: React.FormEvent) {
@@ -273,31 +370,64 @@ export default function MobileApp() {
     } catch { /* silent */ }
   }
 
-  // ── Recording ────────────────────────────────────────────────────────────────
+  // ── Durable recording ─────────────────────────────────────────────────────────
+  function ensureRecorder(): MobileRecorder {
+    if (!recorderRef.current) {
+      recorderRef.current = new MobileRecorder({
+        onStarted: () => { setIsRecording(true); setIsPaused(false); setTiming({ recordedMs: 0, lastResumedAt: Date.now() }); },
+        onPaused: (t) => { setIsPaused(true); setTiming({ recordedMs: t.recordedMs, lastResumedAt: undefined }); },
+        onResumed: (t) => { setIsPaused(false); setTiming({ recordedMs: t.recordedMs, lastResumedAt: t.lastResumedAt }); },
+        onStopped: () => {
+          setIsRecording(false); setIsPaused(false);
+          // The sync queue uploads remaining chunks then the finalize handler updates the UI.
+          if (typeof navigator !== "undefined" && navigator.onLine) {
+            setIsProcessing(true); setProcessingStep("Uploading & transcribing…");
+          }
+        },
+        onStorageWarning: (w) => setStorageWarning(w),
+        onError: (msg) => { setProcessingError(msg); setIsRecording(false); },
+      });
+    }
+    return recorderRef.current;
+  }
+
   async function startRecording() {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      let mimeType = "audio/webm;codecs=opus";
-      if (!MediaRecorder.isTypeSupported(mimeType)) mimeType = "audio/webm";
-      if (!MediaRecorder.isTypeSupported(mimeType)) mimeType = "audio/mp4";
-      audioChunksRef.current = [];
-      const mr = new MediaRecorder(stream, { mimeType });
-      mr.ondataavailable = (e) => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
-      mr.onstop = async () => {
-        stream.getTracks().forEach((t) => t.stop());
-        await processAudioBlob(new Blob(audioChunksRef.current, { type: mimeType }), mimeType);
-      };
-      mr.start();
-      mediaRecorderRef.current = mr;
-      setIsRecording(true); setTranscript(""); setGeneratedNote(null); setEditedNoteContent(""); setIsEditingNote(false); setProcessingError("");
-    } catch { alert("Microphone permission denied."); }
+    setTranscript(""); setGeneratedNote(null); setEditedNoteContent(""); setIsEditingNote(false); setProcessingError("");
+    await ensureRecorder().start(selectedPatient?.id);
   }
 
   function stopRecording() {
-    if (mediaRecorderRef.current?.state === "recording") {
-      setIsRecording(false); setIsProcessing(true); setProcessingStep("Transcribing audio…");
-      mediaRecorderRef.current.stop();
+    void ensureRecorder().stop();
+  }
+
+  function handlePause() { void ensureRecorder().pause(false); }
+  function handleResume() { void ensureRecorder().resume(); }
+
+  async function handleDiscard() {
+    if (!window.confirm("Discard this recording? The captured audio will be deleted and no note will be created.")) return;
+    const rec = ensureRecorder();
+    const sid = rec.currentSessionId;
+    setIsRecording(false); setIsPaused(false); setIsProcessing(false);
+    if (sid) {
+      await addDeletionTombstone(sid, "session"); // tombstone first → delete-wins over any finalize
+      await rec.discard();
+      await deleteSession(sid).catch(() => {});
+      const ok = await deleteServerSession(sid);
+      if (ok) await clearDeletionTombstone(sid, "session");
+    } else {
+      await rec.discard();
     }
+  }
+
+  function handleSyncNow() { void drainAll(); }
+
+  async function handleDeleteEncounter(id: string, e: React.MouseEvent) {
+    e.stopPropagation();
+    if (!window.confirm("Permanently delete this encounter? The recording, transcript, and note will be removed.")) return;
+    setEncounters((prev) => prev.filter((enc) => enc.id !== id));
+    await addDeletionTombstone(id, "encounter");
+    const ok = await deleteEncounter(id);
+    if (ok) await clearDeletionTombstone(id, "encounter");
   }
 
   const handleFileUpload = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -524,6 +654,25 @@ export default function MobileApp() {
         })}
       </div>
 
+      {/* ── Sync / storage banner ── */}
+      {storageWarning && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 14px", background: T.destructiveBg, borderBottom: `1px solid ${T.destructiveBorder}`, color: T.destructive, fontSize: 12, fontWeight: 600 }}>
+          Low device storage ({storageWarning.usageMB} MB used) — finish &amp; sync this session soon.
+        </div>
+      )}
+      {syncStatus && syncStatus.pendingChunks > 0 && (
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "6px 14px", background: isOnline ? T.primarySubtle : T.warningBg, borderBottom: `1px solid ${isOnline ? T.primarySubtleBorder : T.warningBorder}`, color: isOnline ? T.primary : T.warning, fontSize: 12, fontWeight: 600 }}>
+          <span>
+            {isOnline
+              ? `Syncing ${syncStatus.pendingChunks} chunk${syncStatus.pendingChunks === 1 ? "" : "s"}…`
+              : `Offline — ${syncStatus.pendingChunks} chunk${syncStatus.pendingChunks === 1 ? "" : "s"} saved, will sync when reconnected`}
+          </span>
+          {isOnline && !syncStatus.syncing && (
+            <button onClick={handleSyncNow} style={{ border: "none", background: "transparent", color: T.primary, fontWeight: 700, fontSize: 12, cursor: "pointer", textDecoration: "underline" }}>Sync now</button>
+          )}
+        </div>
+      )}
+
       {/* ── Content ── */}
       <main style={{ flex: 1, overflowY: "auto", padding: 16, display: "flex", flexDirection: "column", gap: 16 }}>
 
@@ -602,9 +751,16 @@ export default function MobileApp() {
 
             {/* Mic ring */}
             <div style={{ paddingTop: 16, display: "flex", flexDirection: "column", alignItems: "center", gap: 20 }}>
-              <div style={{ width: 120, height: 120, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", background: isRecording ? T.destructiveBg : T.primarySubtle, border: `2px solid ${isRecording ? T.destructiveBorder : T.primarySubtleBorder}`, animation: isRecording ? "saip-pulse-ring-rec 1.6s ease-in-out infinite" : "none", transition: "background 300ms ease, border-color 300ms ease" }}>
-                <div style={{ width: 80, height: 80, borderRadius: "50%", background: T.surface, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: T.shadowMd, color: isRecording ? T.destructive : T.primary }}>
-                  <MicIcon size={32} />
+              <div style={{ width: 120, height: 120, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", background: isRecording ? (isPaused ? T.warningBg : T.destructiveBg) : T.primarySubtle, border: `2px solid ${isRecording ? (isPaused ? T.warningBorder : T.destructiveBorder) : T.primarySubtleBorder}`, animation: isRecording && !isPaused ? "saip-pulse-ring-rec 1.6s ease-in-out infinite" : "none", transition: "background 300ms ease, border-color 300ms ease" }}>
+                <div style={{ width: 80, height: 80, borderRadius: "50%", background: T.surface, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", boxShadow: T.shadowMd, color: isRecording ? (isPaused ? T.warning : T.destructive) : T.primary, gap: 2 }}>
+                  {isRecording ? (
+                    <>
+                      <RecordingTimer paused={isPaused} recordedMs={timing.recordedMs} lastResumedAt={timing.lastResumedAt} />
+                      {isPaused && <span style={{ fontSize: 9, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em" }}>Paused</span>}
+                    </>
+                  ) : (
+                    <MicIcon size={32} />
+                  )}
                 </div>
               </div>
 
@@ -621,9 +777,28 @@ export default function MobileApp() {
                   </>
                 )}
                 {isRecording && (
-                  <button onClick={stopRecording} style={{ width: "100%", padding: "13px 20px", fontSize: 15, fontWeight: 600, fontFamily: T.fontBody, borderRadius: 10, border: "none", background: T.destructive, color: T.destructiveFg, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, boxShadow: "0 2px 8px rgba(185,28,28,0.22)" }}>
-                    Stop & Process
-                  </button>
+                  <>
+                    <div style={{ display: "flex", gap: 10 }}>
+                      {isPaused ? (
+                        <button onClick={handleResume} style={{ flex: 1, padding: "13px 16px", fontSize: 15, fontWeight: 600, fontFamily: T.fontBody, borderRadius: 10, border: "none", background: T.primary, color: T.primaryFg, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+                          ▶ Resume
+                        </button>
+                      ) : (
+                        <button onClick={handlePause} style={{ flex: 1, padding: "13px 16px", fontSize: 15, fontWeight: 600, fontFamily: T.fontBody, borderRadius: 10, border: `1px solid ${T.primarySubtleBorder}`, background: T.primarySubtle, color: T.primary, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+                          ⏸ Pause
+                        </button>
+                      )}
+                      <button onClick={stopRecording} style={{ flex: 1, padding: "13px 16px", fontSize: 15, fontWeight: 600, fontFamily: T.fontBody, borderRadius: 10, border: "none", background: T.destructive, color: T.destructiveFg, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+                        Stop &amp; Process
+                      </button>
+                    </div>
+                    <button onClick={handleDiscard} style={{ alignSelf: "center", background: "none", border: "none", color: T.muted, fontSize: 12, cursor: "pointer", textDecoration: "underline", padding: 4 }}>
+                      Discard recording
+                    </button>
+                    <p style={{ fontSize: 11, color: T.muted2, textAlign: "center", margin: 0, lineHeight: 1.4 }}>
+                      Keep this app open and the screen on to keep recording.
+                    </p>
+                  </>
                 )}
                 {isProcessing && (
                   <div style={{ display: "flex", alignItems: "center", gap: 8, color: T.muted, fontSize: 14, justifyContent: "center", padding: "8px 0" }}>
@@ -749,23 +924,32 @@ export default function MobileApp() {
                     <span style={{ fontWeight: 600, fontSize: 14, color: T.fg }}>
                       {enc.clientName || 'Session'}
                     </span>
-                    <span
-                      style={{
-                        fontSize: 10,
-                        fontWeight: 700,
-                        textTransform: 'uppercase',
-                        letterSpacing: '0.05em',
-                        padding: '2px 8px',
-                        borderRadius: 9999,
-                        background: sc.bg,
-                        color: sc.color,
-                        border: `1px solid ${sc.border}`,
-                        flexShrink: 0,
-                        marginLeft: 8,
-                      }}
-                    >
-                      {sc.label}
-                    </span>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0, marginLeft: 8 }}>
+                      <span
+                        style={{
+                          fontSize: 10,
+                          fontWeight: 700,
+                          textTransform: 'uppercase',
+                          letterSpacing: '0.05em',
+                          padding: '2px 8px',
+                          borderRadius: 9999,
+                          background: sc.bg,
+                          color: sc.color,
+                          border: `1px solid ${sc.border}`,
+                        }}
+                      >
+                        {sc.label}
+                      </span>
+                      <button
+                        type="button"
+                        aria-label="Delete encounter"
+                        title="Delete encounter"
+                        onClick={(e) => void handleDeleteEncounter(enc.id, e)}
+                        style={{ width: 28, height: 28, display: "inline-flex", alignItems: "center", justifyContent: "center", border: "none", background: "transparent", color: T.muted2, cursor: "pointer", borderRadius: 6, fontSize: 14, lineHeight: 1 }}
+                      >
+                        🗑
+                      </button>
+                    </div>
                   </div>
                   <div style={{ fontSize: 11, color: T.muted2, marginBottom: 2 }}>
                     {new Date(enc.date).toLocaleString()}
